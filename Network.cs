@@ -114,7 +114,7 @@ namespace EdgeGlow
         public const string DisablePacket = "uwABsQAL";
         private const int MaximumDatagram = 16384;
         private static readonly byte[] ScanRequest = Encoding.UTF8.GetBytes("{\"msg\":{\"cmd\":\"scan\",\"data\":{\"account_topic\":\"reserve\"}}}");
-        private readonly object gate = new object(), sendGate = new object();
+        private readonly object gate = new object(), sendGate = new object(), standbyGate = new object();
         private readonly ManualResetEvent stopping = new ManualResetEvent(false);
         private readonly Func<bool, ILanDatagramSocket> socketFactory;
         private readonly Func<LanInterface[]> interfaceProvider;
@@ -122,6 +122,8 @@ namespace EdgeGlow
         private readonly Action<ILanDatagramSocket, int, DeviceInfo> receiveProcessed;
         private readonly Dictionary<string, DeviceInfo> devices = new Dictionary<string, DeviceInfo>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, SessionState> sessions = new Dictionary<string, SessionState>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, StandbyState> standby = new Dictionary<string, StandbyState>(StringComparer.OrdinalIgnoreCase);
+        private long standbyVersion;
         private readonly List<string> conflictAudit = new List<string>();
         private long observationSequence;
         private readonly HashSet<string> joined = new HashSet<string>(StringComparer.Ordinal);
@@ -145,6 +147,17 @@ namespace EdgeGlow
             public bool ConflictBlocked;
             public long LastConflictSequence;
             public string LastConflictingId;
+        }
+
+        // Temporary monitor-follow power changes are separate from the original
+        // session baseline. Identity, rather than an address, carries them through
+        // DHCP; a current validated token is still required for every command.
+        private sealed class StandbyState
+        {
+            public bool? OriginalPower;
+            public int? OriginalBrightness;
+            public bool ChangedPower;
+            public DateTime PowerCommandStatusUtc;
         }
 
         public GoveeLan() : this(delegate(bool reply) { return new UdpLanSocket(reply); }, GetLocalInterfaces, delegate { return DateTime.UtcNow; }) { }
@@ -299,6 +312,146 @@ namespace EdgeGlow
                 SendControlLocked(RazerJson(EnablePacket), expected, authorize, false,
                     delegate { PrepareSessionLocked(expected.Snapshot); });
             }
+        }
+
+        public void Standby(EndpointToken expected, Func<bool> authorize)
+        {
+            lock (sendGate)
+            {
+                long version;
+                lock (gate) { ValidateStandbyToken(expected); lock (standbyGate) version = ++standbyVersion; }
+                StandbyState intent = null;
+                SendControlLocked("{\"msg\":{\"cmd\":\"turn\",\"data\":{\"value\":0}}}", expected,
+                    delegate { return AuthorizeStandby(expected, version, null, authorize); }, false, delegate
+                    {
+                        DeviceInfo device = expected.Snapshot;
+                        lock (standbyGate)
+                        {
+                            if (version != standbyVersion) throw new OperationCanceledException("Automatic standby was canceled.");
+                            if (!standby.TryGetValue(device.Id, out intent))
+                            {
+                                SessionState original;
+                                if (!sessions.TryGetValue(SessionKey(device), out original))
+                                {
+                                    // The selected, freshly scanned identity can have
+                                    // moved before its old endpoint is cleaned up.
+                                    foreach (SessionState prior in sessions.Values)
+                                        if (String.Equals(prior.Target.Id, device.Id, StringComparison.OrdinalIgnoreCase) &&
+                                            (original == null || prior.Target.LastSeenUtc > original.Target.LastSeenUtc)) original = prior;
+                                    if (original == null) throw new InvalidOperationException("Standby requires a retained lighting session.");
+                                }
+                                intent = new StandbyState { OriginalPower = original.OriginalPower,
+                                    OriginalBrightness = original.OriginalBrightness, ChangedPower = original.ChangedPower,
+                                    PowerCommandStatusUtc = original.PowerCommandStatusUtc };
+                                // Failed sends may have reached the strip. The wake
+                                // obligation must exist before the first off attempt.
+                                standby.Add(device.Id, intent);
+                            }
+                        }
+                    });
+                SendControlLocked(RazerJson(DisablePacket), expected,
+                    delegate { return AuthorizeStandby(expected, version, intent, authorize); }, false, null);
+            }
+        }
+
+        public void Wake(EndpointToken expected, Func<bool> authorize)
+        {
+            lock (sendGate)
+            {
+                long version; StandbyState intent;
+                lock (gate)
+                {
+                    ValidateStandbyToken(expected);
+                    lock (standbyGate)
+                    {
+                        version = standbyVersion;
+                        if (!standby.TryGetValue(expected.Id, out intent))
+                            throw new InvalidOperationException("No matching automatic standby is pending.");
+                    }
+                }
+                SendControlLocked(RazerJson(EnablePacket), expected,
+                    delegate { return AuthorizeStandby(expected, version, intent, authorize); }, false,
+                    delegate { RequireStandbyIntent(expected.Id, version, intent); RestoreStandbyBaseline(expected.Snapshot, intent); });
+                SendControlLocked("{\"msg\":{\"cmd\":\"turn\",\"data\":{\"value\":1}}}", expected,
+                    delegate { return AuthorizeStandby(expected, version, intent, authorize); }, false, delegate
+                    {
+                        RequireStandbyIntent(expected.Id, version, intent);
+                        SessionState session = RestoreStandbyBaseline(expected.Snapshot, intent);
+                        // The explicit monitor-follow wake is authorized by our
+                        // own off attempt, including an originally unknown state.
+                        // Normal cleanup still obeys the unchanged original state.
+                        if (session.OriginalPower == false) session.ChangedPower = intent.ChangedPower = true;
+                        session.PowerCommandStatusUtc = intent.PowerCommandStatusUtc = expected.Snapshot.LastStatusUtc;
+                    });
+                lock (standbyGate)
+                {
+                    StandbyState current;
+                    if (version == standbyVersion && standby.TryGetValue(expected.Id, out current) && Object.ReferenceEquals(current, intent))
+                        standby.Remove(expected.Id);
+                }
+            }
+        }
+
+        public void CancelStandby()
+        {
+            // Never acquire the identity/send gates here: an engine can cancel
+            // while its control lock is held and an authorization callback waits
+            // for that lock. This gate is never held across such a callback.
+            lock (standbyGate) { standbyVersion++; standby.Clear(); }
+        }
+
+        public bool HasStandby(string deviceId)
+        {
+            if (String.IsNullOrWhiteSpace(deviceId)) return false;
+            lock (standbyGate) return standby.ContainsKey(deviceId);
+        }
+
+        private void ValidateStandbyToken(EndpointToken expected)
+        {
+            ValidateControlToken(expected);
+            DateTime now = utcNow(), seen = expected.Snapshot.LastSeenUtc;
+            if (seen > now || seen <= now.AddSeconds(-20))
+                throw new InvalidOperationException("Automatic standby requires a fresh matching device reply.");
+        }
+
+        private bool AuthorizeStandby(EndpointToken expected, long version, StandbyState intent, Func<bool> authorize)
+        {
+            ValidateStandbyToken(expected);
+            if (!MatchesStandbyIntent(expected.Id, version, intent)) return false;
+            bool allowed = authorize == null || authorize();
+            // The callback can reenter cancellation or the parser. Recheck both
+            // freshness and ownership after it returns, at this send boundary.
+            ValidateStandbyToken(expected);
+            return allowed && MatchesStandbyIntent(expected.Id, version, intent);
+        }
+
+        private bool MatchesStandbyIntent(string id, long version, StandbyState intent)
+        {
+            lock (standbyGate)
+            {
+                StandbyState current;
+                return version == standbyVersion && (intent == null ||
+                    (standby.TryGetValue(id, out current) && Object.ReferenceEquals(current, intent)));
+            }
+        }
+
+        private void RequireStandbyIntent(string id, long version, StandbyState intent)
+        {
+            if (!MatchesStandbyIntent(id, version, intent)) throw new OperationCanceledException("Automatic standby was canceled.");
+        }
+
+        private SessionState RestoreStandbyBaseline(DeviceInfo device, StandbyState intent)
+        {
+            SessionState session;
+            if (!sessions.TryGetValue(SessionKey(device), out session))
+            {
+                session = new SessionState { Target = device.Copy() };
+                sessions.Add(SessionKey(device), session);
+            }
+            session.OriginalPower = intent.OriginalPower; session.OriginalBrightness = intent.OriginalBrightness;
+            session.ChangedPower = session.ChangedPower || intent.ChangedPower;
+            session.PowerCommandStatusUtc = intent.PowerCommandStatusUtc;
+            return session;
         }
 
         public void Disable() { Disable(RequireCurrentEndpoint()); }

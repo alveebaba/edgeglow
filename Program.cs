@@ -59,6 +59,7 @@ namespace EdgeGlow
         private readonly Color muted = Color.FromArgb(155, 168, 185);
         private readonly Color accent = Color.FromArgb(91, 215, 187);
         private readonly GlowEngine engine;
+        private DisplayPowerMonitor displayPower;
         private ShutdownCoordinator shutdown;
         private readonly Stopwatch stoppingClock = new Stopwatch();
         private Button forceExit;
@@ -91,7 +92,9 @@ namespace EdgeGlow
             BuildUi();
             if (!preview)
             {
-                engine = new GlowEngine(settings); shutdown = new ShutdownCoordinator(engine); engine.Start();
+                engine = new GlowEngine(settings); shutdown = new ShutdownCoordinator(engine);
+                displayPower = new DisplayPowerMonitor(engine.SetDisplayPowerState, Storage.Log);
+                engine.Start();
                 ContextMenuStrip menu = new ContextMenuStrip();
                 menu.Items.Add("Open EdgeGlow", null, delegate { Reveal(); });
                 menu.Items.Add("Pause / resume", null, delegate { engine.Paused = !engine.Paused; });
@@ -280,6 +283,7 @@ namespace EdgeGlow
             {
                 if (timer != null) timer.Dispose();
                 if (tray != null) { tray.Visible = false; tray.Dispose(); }
+                if (displayPower != null) displayPower.Dispose();
                 if (engine != null) engine.Dispose();
                 if (Icon != null) Icon.Dispose();
             }

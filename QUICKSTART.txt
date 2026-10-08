@@ -1,4 +1,4 @@
-EdgeGlow 0.1.0 — Windows x64 / Govee G1 H6609
+EdgeGlow 0.1.1 — Windows x64 / Govee G1 H6609
 
 One-time experimental release. No ongoing maintenance or support.
 
@@ -10,11 +10,13 @@ One-time experimental release. No ongoing maintenance or support.
 
 Defaults:18 zones (6 top,3 right,6 bottom,3 left),24 updates/s,150 ms smoothness,65% brightness,20% edge depth,125% color strength,Ignore dark background ON.
 
+Automatic screen standby: while syncing, Windows display-off, lock/sleep or selected-display disconnection requests lights off and stops capture. Ten continuous seconds of failed/missing capture also requests off. A healthy still picture stays active; brief errors hold the last colors. Lighting returns after the blockers clear and a fresh image arrives. Manual Pause stays paused. A physical monitor button may be invisible to Windows if its video connection remains active. Network/suspend timing can prevent delivery; test off/wake on your PC.
+
 Supported: H6609 only; Windows10/11 x64,.NET Framework4.8,D3D11 GPU. Tested physically on one Windows11 PC and one strip. Firmware and mounting can vary. This build is unsigned. DRM video and some exclusive-fullscreen games may block capture; try borderless fullscreen. HDR and edge colors are approximate. Rare-blink stability remains unconfirmed after the timing fix.
 
 Settings/logs:%LOCALAPPDATA%\EdgeGlow. No screen images are saved or uploaded.
 To remove:uncheck Start with Windows,Exit EdgeGlow,delete this folder; optionally delete local settings/logs.
 
 Full documentation/source:https://github.com/alveebaba/edgeglow
-Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.0
+Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.1
 License:MIT (included).

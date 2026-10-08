@@ -4,7 +4,7 @@ Lightweight Windows screen lighting for the **Govee Gaming Light Strip G1 (H6609
 
 **One-time, experimental release. This repository is archived and is not maintained. No support or future updates are promised.** The source is available under the MIT license so others can use and maintain their own forks.
 
-[Download EdgeGlow 0.1.0 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.0/EdgeGlow-v0.1.0-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.0)
+[Download EdgeGlow 0.1.1 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.1/EdgeGlow-v0.1.1-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.1)
 
 ## Quick start
 
@@ -23,6 +23,14 @@ Requires Windows 10/11 x64, .NET Framework 4.8 and a GPU/driver supporting D3D11
 Starting settings: **24 updates/second, 150 ms smoothness, 65% brightness, 20% edge depth, 125% color strength, Ignore dark background on**. Tune lighting exposes all these settings. Lower smoothness reacts faster; color strength boosts saturation. Edge depth makes the sampled bands thicker. Dark-background weighting gives bright details more influence; turn it off if white details dominate a scene.
 
 The default layout has **18 zones: six top, three right, six bottom and three left**. Rotation starts at zero because mounting varies. This layout was checked on one H6609. A legacy ten-zone layout is still available by setting ZoneCount to 10 in the local settings file while the app is fully exited; restart afterward. There is no zone-count or device picker in the UI.
+
+## Automatic screen standby
+
+While syncing, EdgeGlow requests lights off when Windows reports the session display off, the PC locks or sleeps, or the selected display disconnects. Capture stops during these states. Lighting resumes automatically after the display/session is available and capture provides a fresh usable image. A manual **Pause** stays paused after wake.
+
+Ten continuous seconds without a usable capture also requests lights off, then waits for a fresh image. Brief capture interruptions hold the last colors. A healthy still picture remains active; lack of new animation is not a sleep signal. Black pictures remain ordinary content and naturally produce dark light colors.
+
+Display power uses Windows [session display notifications](https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids). A monitor's physical power button may not notify Windows if the monitor keeps its video connection active. This is especially relevant with multiple displays. No power-policy settings are changed. Off/wake commands use bounded local UDP attempts; a send does not establish physical delivery, particularly during system suspend or network loss.
 
 ## Limits
 

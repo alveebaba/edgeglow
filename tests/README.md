@@ -4,6 +4,7 @@ Run from the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-public-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-standby-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-regression-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-combined-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-phase-e-control-tests.ps1
@@ -11,6 +12,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-zone-layout-test
 ```
 
 The public runner covers fresh public defaults, paused first launch, first-device identity selection, reply timing and output diagnostics. The other runners exercise real engine/filter/detector integration, combined transport boundaries, receiver retirement, release retries and ten/eighteen-zone mapping. They use generated capture, injected time and fake/in-memory transports; these suites do not capture the real desktop or control a strip. Settings fixtures are isolated. Raw evidence is written under review-output or temporary test directories, excluded from Git.
+
+The standby runner exercises notification parsing and callback lifetime, automatic off/wake transitions, fresh-image recovery, still pictures, missing captures, manual pause, overlapping blockers, bounded retries, transport identity checks and retained power baselines. Registration, capture and network boundaries are injected; it does not turn off a real monitor or send to a strip.
 
 Additional focused source tests and runners cover network parsing/authorization, crop boundaries, dark-background weighting, fixture copying and logical zone selection. Native encoding tests use generated D3D11/WARP textures; they require the native build toolchain. SilentStartTests.cs is a separate GUI test and is not part of the public no-device runner.
 

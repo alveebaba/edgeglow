@@ -28,6 +28,9 @@ namespace EdgeGlow
         public double LastColorSendGapSeconds, MaximumColorSendGapSeconds;
         public string LastActivationReason = "";
         public string[] OutputDiagnosticEvents = new string[0];
+        public int DisplayPowerState = -1, StandbyAttempts;
+        public bool AutomaticStandby;
+        public string StandbyReason = "";
     }
 
     public interface IEngineCapture : IDisposable
@@ -60,6 +63,14 @@ namespace EdgeGlow
         void SendColors(EndpointToken endpoint, Color[] colors, bool flag, Func<bool> authorize);
     }
 
+    public interface IEngineStandbyTransport
+    {
+        void Standby(EndpointToken endpoint, Func<bool> authorize);
+        void Wake(EndpointToken endpoint, Func<bool> authorize);
+        bool HasStandby(string deviceId);
+        void CancelStandby();
+    }
+
     public sealed class EngineServices
     {
         public IEngineTransport Transport;
@@ -77,9 +88,9 @@ namespace EdgeGlow
                 Transport = new LanAdapter(), CreateCapture = delegate { return new CaptureAdapter(); },
                 UtcNow = delegate { return DateTime.UtcNow; }, MonotonicSeconds = delegate { return clock.Elapsed.TotalSeconds; },
                 SelectBounds = delegate(AppSettings config) {
-                    Screen chosen = Screen.PrimaryScreen;
+                    Screen chosen = String.IsNullOrEmpty(config.Monitor) ? Screen.PrimaryScreen : null;
                     foreach (Screen display in Screen.AllScreens) if (display.DeviceName == config.Monitor) chosen = display;
-                    return chosen.Bounds;
+                    return chosen == null ? Rectangle.Empty : chosen.Bounds;
                 },
                 CompetitorRunning = delegate {
                     foreach (string name in new string[] { "GoveeDesktop", "Govee Desktop" }) {
@@ -107,7 +118,7 @@ namespace EdgeGlow
                 ", SDR white " + sampler.SdrWhiteLevelNits + " nits"; } }
             public void Dispose() { sampler.Dispose(); }
         }
-        public sealed class LanAdapter : IEngineTransport
+        public sealed class LanAdapter : IEngineTransport, IEngineStandbyTransport
         {
             private readonly GoveeLan lan;
             public LanAdapter() : this(new GoveeLan()) { }
@@ -124,6 +135,10 @@ namespace EdgeGlow
             public void SetTarget(DeviceInfo device) { lan.SetTarget(device); }
             public void Enable(EndpointToken endpoint, Func<bool> authorize) { lan.Enable(endpoint, authorize); }
             public void Disable(EndpointToken endpoint) { lan.Disable(endpoint); }
+            public void Standby(EndpointToken endpoint, Func<bool> authorize) { lan.Standby(endpoint, authorize); }
+            public void Wake(EndpointToken endpoint, Func<bool> authorize) { lan.Wake(endpoint, authorize); }
+            public bool HasStandby(string deviceId) { return lan.HasStandby(deviceId); }
+            public void CancelStandby() { lan.CancelStandby(); }
             public void SendColors(EndpointToken endpoint, Color[] colors, bool flag, Func<bool> authorize) { lan.SendColors(endpoint, colors, flag, authorize); }
             public void Dispose() { lan.Dispose(); }
         }
@@ -173,6 +188,14 @@ namespace EdgeGlow
         private readonly object tickGate = new object(), controlGate = new object(), lifetimeGate = new object();
         private readonly EngineServices services;
         private readonly IEngineTransport lan;
+        private readonly IEngineStandbyTransport standbyTransport;
+        public const double NoPictureDelaySeconds = 10;
+        private volatile bool displayOff, selectedDisplayMissing, automaticStandby, noPictureStandby;
+        private int displayPowerState = -1, topologyChanged, standbyAttempts;
+        private double captureUnavailableSince = -1, nextStandbyAttempt;
+        private string standbyIdentity = "", standbyReason = "";
+        private bool standbyWakeAttempted;
+        private volatile bool standbyFreshImage;
         private readonly List<ReleaseObligation> obligations = new List<ReleaseObligation>();
         private readonly ColorSmoother smoother = new ColorSmoother();
         private ActiveAreaDetector detector = new ActiveAreaDetector();
@@ -227,12 +250,13 @@ namespace EdgeGlow
                 dependencies.SelectBounds == null || dependencies.CompetitorRunning == null) throw new ArgumentException("Engine dependencies are incomplete.");
             settings = config.Copy(); settings.Validate(); paused = !settings.AutoSync;
             state = new EngineState { Colors = new Color[settings.ZoneCount] };
-            services = dependencies; lan = services.Transport;
+            services = dependencies; lan = services.Transport; standbyTransport = lan as IEngineStandbyTransport;
             lastSmoothAt = services.MonotonicSeconds();
             lan.Error += OnNetworkError; lan.DeviceSeen += OnDeviceSeen;
             if (services.ListenSystemEvents) {
                 SystemEvents.SessionSwitch += OnSession;
                 SystemEvents.PowerModeChanged += OnPower;
+                SystemEvents.DisplaySettingsChanged += OnDisplayTopology;
             }
         }
         private void Log(string text) { if (services.Log != null) services.Log(text); }
@@ -253,8 +277,17 @@ namespace EdgeGlow
         public void Update(AppSettings config)
         {
             AppSettings next = config.Copy(); next.Validate();
-            if (next.ZoneCount != settings.ZoneCount) throw new InvalidOperationException("Changing the zone layout requires restarting EdgeGlow.");
-            settings = next;
+            lock (controlGate) {
+                if (next.ZoneCount != settings.ZoneCount) throw new InvalidOperationException("Changing the zone layout requires restarting EdgeGlow.");
+                string priorId = String.IsNullOrEmpty(settings.DeviceId) ? discoveredDeviceId : settings.DeviceId;
+                string nextId = String.IsNullOrEmpty(next.DeviceId) ? discoveredDeviceId : next.DeviceId;
+                bool changedIdentity = !String.Equals(nextId, priorId, StringComparison.OrdinalIgnoreCase);
+                settings = next;
+                if (changedIdentity) {
+                    controlVersion++; CancelTestLocked();
+                    if (standbyTransport != null) standbyTransport.CancelStandby();
+                }
+            }
         }
         public void Start()
         {
@@ -270,7 +303,7 @@ namespace EdgeGlow
         private void BeginIdentification(int zone, bool raw)
         {
             lock (controlGate) {
-                if (quit) return;
+                if (quit || displayOff || selectedDisplayMissing || sessionLocked || suspended || automaticStandby) return;
                 testZone = Math.Max(0, Math.Min(settings.ZoneCount - 1, zone)); testUntil = services.MonotonicSeconds() + 8;
                 testRaw = raw; controlVersion++; testClearPending = false;
             }
@@ -289,7 +322,7 @@ namespace EdgeGlow
         {
             lock (controlGate) {
                 ExpireTestLocked();
-                if (quit || sessionLocked || suspended || competitor || version != controlVersion) return false;
+                if (quit || sessionLocked || suspended || displayOff || selectedDisplayMissing || competitor || version != controlVersion || !IsSelectedIdentity(endpoint.Id)) return false;
                 if (testing ? testZone < 0 : paused || testZone >= 0) return false;
                 // The production transport invokes this at its serialized send boundary.
                 if (activation) RememberActivation(endpoint);
@@ -298,24 +331,120 @@ namespace EdgeGlow
         }
         public void SetSessionBlocked(bool locked, bool sleep)
         {
-            sessionLocked = locked; suspended = sleep;
-            if (locked || sleep) CancelTest();
+            lock (controlGate) {
+                if (sessionLocked == locked && suspended == sleep) return;
+                sessionLocked = locked; suspended = sleep; controlVersion++;
+                if (locked || sleep) { standbyFreshImage = false; CancelTestLocked(); }
+                else resumeVersion++;
+            }
+        }
+        public void SetDisplayPowerState(int value)
+        {
+            if (value < 0 || value > 2) return;
+            lock (controlGate) {
+                if (quit || displayPowerState == value) return;
+                bool wasOff = displayOff;
+                displayPowerState = value; displayOff = value == 0;
+                if (wasOff == displayOff) return;
+                controlVersion++;
+                if (displayOff) { standbyFreshImage = false; CancelTestLocked(); }
+                else resumeVersion++;
+            }
+        }
+        public void InvalidateDisplayTopology() { Interlocked.Exchange(ref topologyChanged, 1); }
+        private void OnDisplayTopology(object sender, EventArgs e) { InvalidateDisplayTopology(); }
+        private bool AutomaticBlock { get { return displayOff || selectedDisplayMissing || sessionLocked || suspended || noPictureStandby; } }
+        private bool IsSelectedIdentity(string id)
+        {
+            string selected = settings.DeviceId;
+            if (String.IsNullOrEmpty(selected)) selected = discoveredDeviceId;
+            return String.IsNullOrEmpty(selected) || String.Equals(selected, id, StringComparison.OrdinalIgnoreCase);
+        }
+        private bool HasOwnedIdentity(EndpointToken endpoint)
+        {
+            if (endpoint == null) return false;
+            foreach (ReleaseObligation item in obligations)
+                if (String.Equals(item.Endpoint.Id, endpoint.Id, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+        private bool AuthorizeStandby(long version, EndpointToken endpoint)
+        {
+            lock (controlGate) {
+                if (quit || competitor || version != controlVersion || !automaticStandby || !AutomaticBlock ||
+                    !IsSelectedIdentity(endpoint.Id) || !String.Equals(standbyIdentity, endpoint.Id, StringComparison.OrdinalIgnoreCase)) return false;
+                RememberActivation(endpoint);
+                return true;
+            }
+        }
+        private void CancelAutomaticStandby()
+        {
+            if (standbyTransport != null) standbyTransport.CancelStandby();
+            automaticStandby = false; noPictureStandby = false; standbyIdentity = ""; standbyReason = "";
+            standbyAttempts = 0; standbyWakeAttempted = false; standbyFreshImage = false; captureUnavailableSince = -1;
+        }
+        private bool ServiceAutomaticStandby(EndpointToken endpoint, bool reachable, double now, long version, string reason)
+        {
+            if (standbyTransport == null || (!automaticStandby && !HasOwnedIdentity(endpoint))) return false;
+            bool entering;
+            lock (controlGate) {
+                if (quit || competitor || version != controlVersion || !AutomaticBlock) throw new OperationCanceledException();
+                entering = !automaticStandby;
+                if (entering) {
+                    automaticStandby = true; standbyIdentity = endpoint.Id;
+                }
+                // Preserve an intervening Pause or wake version. Only our own test
+                // cancellation may replace the captured authorization version.
+                if (testZone >= 0) { CancelTestLocked(); version = controlVersion; }
+                testClearPending = false;
+                // A renewed block after a partial wake needs a new off budget.
+                // Overlapping blockers with no wake attempt remain quiet.
+                if (entering || standbyWakeAttempted) {
+                    standbyAttempts = 0; nextStandbyAttempt = now; standbyWakeAttempted = false;
+                }
+            }
+            if (entering) {
+                DiagnosticLog("Automatic standby requested: " + reason);
+                ResetPixels(); lastAmbient = null; lastLogicalAmbient = null; previous = null; previousWasTest = false;
+                activationAttempts = 0; nextActivation = now;
+            }
+            standbyReason = reason;
+            standbyFreshImage = false;
+            if (reachable && String.Equals(standbyIdentity, endpoint.Id, StringComparison.OrdinalIgnoreCase) &&
+                standbyAttempts < 3 && now >= nextStandbyAttempt) {
+                standbyAttempts++; nextStandbyAttempt = now + 1;
+                try {
+                    standbyTransport.Standby(endpoint, delegate { return AuthorizeStandby(version, endpoint); });
+                    DiagnosticLog("Automatic standby locally sent; delivery unconfirmed: " + reason);
+                    // A successful local send needs no periodic off commands.
+                    nextStandbyAttempt = Double.PositiveInfinity;
+                } catch (OperationCanceledException) { }
+                catch (Exception ex) { RecordNetworkError(ex); }
+            }
+            // A canceled request before its first off attempt leaves the existing
+            // stream active. Partial/failed sends retain an accountable off intent.
+            if (standbyTransport.HasStandby(standbyIdentity)) sessionActive = false;
+            return true;
         }
         private void OnSession(object sender, SessionSwitchEventArgs e)
         {
-            if (e.Reason == SessionSwitchReason.SessionLock || e.Reason == SessionSwitchReason.RemoteDisconnect || e.Reason == SessionSwitchReason.ConsoleDisconnect) SetSessionBlocked(true, suspended);
-            if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.RemoteConnect || e.Reason == SessionSwitchReason.ConsoleConnect) SetSessionBlocked(false, suspended);
+            lock (controlGate) {
+                if (e.Reason == SessionSwitchReason.SessionLock || e.Reason == SessionSwitchReason.RemoteDisconnect || e.Reason == SessionSwitchReason.ConsoleDisconnect) SetSessionBlocked(true, suspended);
+                if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.RemoteConnect || e.Reason == SessionSwitchReason.ConsoleConnect) SetSessionBlocked(false, suspended);
+            }
         }
         private void OnPower(object sender, PowerModeChangedEventArgs e)
         {
-            if (e.Mode == PowerModes.Suspend) SetSessionBlocked(sessionLocked, true);
-            if (e.Mode == PowerModes.Resume) SetSessionBlocked(sessionLocked, false);
+            lock (controlGate) {
+                if (e.Mode == PowerModes.Suspend) SetSessionBlocked(sessionLocked, true);
+                if (e.Mode == PowerModes.Resume) SetSessionBlocked(sessionLocked, false);
+            }
         }
         private static string Key(EndpointToken endpoint) { return endpoint == null ? "" : (endpoint.Id ?? "").ToUpperInvariant() + "|" + endpoint.Ip; }
         private void RecordNetworkError(Exception ex) { OnNetworkError(ex.GetType().Name + ": " + ex.Message); }
         private void ResetPixels()
         {
             desired = null; sampledSettings = null; smoother.Reset();
+            standbyFreshImage = false;
             detector.ClearPendingEvidence();
             if (capture != null) { capture.Dispose(); capture = null; }
         }
@@ -380,16 +509,25 @@ namespace EdgeGlow
         }
         private bool Activate(EndpointToken endpoint, double now, long version, bool testing)
         {
+            now = services.MonotonicSeconds();
             string key = Key(endpoint);
+            bool waking = automaticStandby && String.Equals(standbyIdentity, endpoint.Id, StringComparison.OrdinalIgnoreCase) &&
+                standbyTransport.HasStandby(endpoint.Id);
+            if (automaticStandby && !waking) CancelAutomaticStandby();
             if (sessionActive && sessionKey == key && sessionEndpoint.Generation == endpoint.Generation) return true;
             bool offRecovery = offEpisode && hasActivated;
             if (now < nextActivation || activationAttempts >= 3 || (offRecovery && offRecoveryAttempts >= 3)) return false;
             activationAttempts++; nextActivation = now + 1;
             if (offRecovery) offRecoveryAttempts++;
             activationAttemptsTotal++; lastActivationAttemptUtc = services.UtcNow();
-            lastActivationReason = testing ? "zone identification" : offRecovery ? "fresh device-off status" : datagrams == 0 ? "first usable image" : "resume or endpoint/reply/transport recovery";
+            lastActivationReason = waking ? "screen available after automatic standby" : testing ? "zone identification" : offRecovery ? "fresh device-off status" : datagrams == 0 ? "first usable image" : "resume or endpoint/reply/transport recovery";
             DiagnosticLog("Lighting stream activation attempt: " + lastActivationReason + ", endpoint " + key + ", transport generation " + endpoint.Generation);
-            lan.Enable(endpoint, delegate { return Authorize(version, testing, endpoint, true); });
+            if (waking) {
+                standbyWakeAttempted = true;
+                standbyTransport.Wake(endpoint, delegate { return Authorize(version, testing, endpoint, true); });
+            }
+            else lan.Enable(endpoint, delegate { return Authorize(version, testing, endpoint, true); });
+            if (waking) CancelAutomaticStandby();
             sessionActive = true; sessionKey = key; sessionEndpoint = endpoint; sessionGeneration++;
             hasActivated = true; lastActivationStatus = endpoint.Snapshot.LastStatusUtc;
             lastActivationSucceededUtc = services.UtcNow(); maximumColorSendGapSeconds = 0; maximumColorSendGapUtc = DateTime.MinValue; maximumColorSendGapWasTest = false; lastColorSendGapSeconds = 0;
@@ -486,7 +624,8 @@ namespace EdgeGlow
                 AllBlackColorDatagrams = allBlackColorDatagrams, NearBlackColorDatagrams = nearBlackColorDatagrams, LastColorPeak = lastColorPeak, LastColorWasTest = lastColorWasTest, LastNearBlackWasTest = lastNearBlackWasTest, LastAllBlackWasTest = lastAllBlackWasTest,
                 LastColorSendUtc = lastColorSendUtc, LastNearBlackSendUtc = lastNearBlackSendUtc, LastAllBlackSendUtc = lastAllBlackSendUtc, MaximumColorSendGapUtc = maximumColorSendGapUtc, MaximumColorSendGapWasTest = maximumColorSendGapWasTest, LastColorSendGapSeconds = lastColorSendGapSeconds, MaximumColorSendGapSeconds = maximumColorSendGapSeconds,
                 ActivationAttemptsTotal = activationAttemptsTotal, LastActivationAttemptUtc = lastActivationAttemptUtc, LastActivationSucceededUtc = lastActivationSucceededUtc, LastActivationReason = lastActivationReason,
-                PowerOffReports = powerOffReports, LastPowerOffReportUtc = lastPowerOffReportUtc, OutputDiagnosticEvents = outputDiagnosticEvents.ToArray()
+                PowerOffReports = powerOffReports, LastPowerOffReportUtc = lastPowerOffReportUtc, OutputDiagnosticEvents = outputDiagnosticEvents.ToArray(),
+                DisplayPowerState = displayPowerState, AutomaticStandby = automaticStandby, StandbyReason = standbyReason, StandbyAttempts = standbyAttempts
             };
         }
         public void Step()
@@ -504,6 +643,7 @@ namespace EdgeGlow
                         nextStart = now + 2;
                         lan.Start(); started = true; transportGeneration = lan.Generation; networkError = "";
                     }
+                    if (Interlocked.Exchange(ref topologyChanged, 0) != 0) inspectAt = 0;
                     if (now >= inspectAt || priorMonitor != config.Monitor) {
                         competitor = services.CompetitorRunning(); inspectAt = now + 3;
                         Rectangle nextBounds = services.SelectBounds(config);
@@ -511,6 +651,10 @@ namespace EdgeGlow
                             ResetPixels(); detector = new ActiveAreaDetector(); bounds = nextBounds;
                         }
                         priorMonitor = config.Monitor;
+                        bool missing = bounds.Width <= 0 || bounds.Height <= 0;
+                        if (selectedDisplayMissing != missing) {
+                            lock (controlGate) { selectedDisplayMissing = missing; controlVersion++; if (missing) CancelTestLocked(); else resumeVersion++; }
+                        }
                     }
                     if (priorMode != config.AreaMode) { detector = new ActiveAreaDetector(); priorMode = config.AreaMode; desired = null; smoother.Reset(); }
                     bool requestedDiscovery = Interlocked.Exchange(ref discoveryRequested, 0) != 0;
@@ -539,6 +683,7 @@ namespace EdgeGlow
                     if (recoveredTransport) {
                         sessionActive = false; activationAttempts = 0; nextActivation = now;
                         transportGeneration = endpoint.Generation;
+                        if (automaticStandby) { standbyAttempts = 0; nextStandbyAttempt = now; }
                         foreach (ReleaseObligation item in obligations) if (item.Requested) { item.Attempts = 0; item.NextAttempt = now; }
                     }
                     if (reachable) foreach (ReleaseObligation item in obligations) {
@@ -553,7 +698,23 @@ namespace EdgeGlow
                     int zone; long version; bool rawTest;
                     lock (controlGate) { ExpireTestLocked(); zone = testZone; rawTest = testRaw; version = controlVersion; }
                     bool testing = zone >= 0;
-                    bool intentionalPause = (paused && !testing) || sessionLocked || suspended || competitor;
+                    if (automaticStandby && !IsSelectedIdentity(standbyIdentity)) {
+                        CancelAutomaticStandby(); RequestRelease();
+                    }
+                    if (sessionActive && sessionEndpoint != null && !IsSelectedIdentity(sessionEndpoint.Id)) RequestRelease();
+                    bool automaticBlock = displayOff || selectedDisplayMissing || sessionLocked || suspended;
+                    bool manualPause = (paused && !testing && !(automaticBlock && previousWasTest && !automaticStandby)) || competitor;
+                    if (manualPause) CancelAutomaticStandby();
+                    if (automaticBlock && !manualPause) {
+                        string reason = suspended ? "Windows sleeping" : sessionLocked ? "Windows locked" : displayOff ? "Windows display off" : "selected display unavailable";
+                        if (ServiceAutomaticStandby(endpoint, reachable, now, version, reason)) {
+                            TryReleases(now, false);
+                            Publish("Screen standby: " + reason, networkError, "automatic standby; delivery unconfirmed", target, null, false, work);
+                            previouslyReachable = reachable;
+                            return;
+                        }
+                    }
+                    bool intentionalPause = manualPause || automaticBlock;
                     FinishIdentification(endpoint, reachable, intentionalPause, config, version);
                     if (intentionalPause) {
                         if (sessionLocked || suspended || competitor) CancelTest();
@@ -576,7 +737,7 @@ namespace EdgeGlow
                         return;
                     }
                     previouslyReachable = true;
-                    ObservePower(target, utc);
+                    if (!automaticStandby) ObservePower(target, utc);
                     if (testing) {
                         Color[] testColors = new Color[config.ZoneCount];
                         for (int i = 0; i < config.ZoneCount; i++) testColors[i] = i == zone ? Color.FromArgb(100, 35, 5) : Color.Black;
@@ -605,6 +766,14 @@ namespace EdgeGlow
                         detector.ClearPendingEvidence(); lastSmoothAt = now;
                         if (captureError.Length != 0 && captureError != lastCaptureError) Log("Capture recovery: " + captureError);
                         lastCaptureError = captureError;
+                        if (captureUnavailableSince < 0) captureUnavailableSince = now;
+                        if (standbyTransport != null && (automaticStandby || now - captureUnavailableSince >= NoPictureDelaySeconds)) {
+                            noPictureStandby = true;
+                            if (ServiceAutomaticStandby(endpoint, reachable, now, version, "no usable screen image")) {
+                                Publish("Screen standby: waiting for screen capture", captureError, "automatic standby; no usable image", target, null, false, work);
+                                return;
+                            }
+                        }
                         // Ambient history is separate from calibration: an expired test can never be heartbeated.
                         if (sessionActive && lastAmbient != null) Send(endpoint, lastAmbient, false, config, now, version);
                         else if (previousWasTest) { RequestRelease(); TryReleases(now, false); previous = null; previousWasTest = false; }
@@ -615,6 +784,19 @@ namespace EdgeGlow
                     lastCaptureError = "";
                     IEngineCaptureMetadata metadata = capture as IEngineCaptureMetadata;
                     bool fresh = metadata == null ? capture.HasNewFrame : metadata.HasFreshDesktopFrame;
+                    captureUnavailableSince = -1;
+                    if (automaticStandby && fresh) {
+                        lock (controlGate) {
+                            if (version != controlVersion || displayOff || selectedDisplayMissing || sessionLocked || suspended)
+                                throw new OperationCanceledException();
+                            standbyFreshImage = true;
+                        }
+                    }
+                    if (automaticStandby && !standbyFreshImage) {
+                        Publish("Screen standby: waiting for a current frame", "The screen must provide a fresh image before lighting resumes.", "automatic standby; waiting for fresh image", target, null, false, work);
+                        return;
+                    }
+                    noPictureStandby = false;
                     if (fresh) { freshFrames++; lastImageAt = now; lastImageUtc = utc; }
                     else if (metadata != null && metadata.IsReprocessedFrame) reprocessedFrames++;
                     else idleResults++;
@@ -653,7 +835,7 @@ namespace EdgeGlow
             try {
                 while (!quit) {
                     Stopwatch timer = Stopwatch.StartNew(); Step();
-                    int remaining = (int)Math.Max(1, (paused ? 100 : 1000.0 / settings.Fps) - timer.Elapsed.TotalMilliseconds);
+                    int remaining = (int)Math.Max(1, (displayOff || selectedDisplayMissing || sessionLocked || suspended ? 100 : paused ? 100 : 1000.0 / settings.Fps) - timer.Elapsed.TotalMilliseconds);
                     while (remaining > 0 && !quit) { int delay = Math.Min(remaining, 50); Thread.Sleep(delay); remaining -= delay; }
                 }
             } finally { lock (tickGate) { Shutdown(); } }
@@ -661,7 +843,7 @@ namespace EdgeGlow
         private void Shutdown()
         {
             if (disposed) return;
-            disposed = true; CancelTest(); RequestRelease();
+            disposed = true; CancelTest(); CancelAutomaticStandby(); RequestRelease();
             // UDP is unacknowledged. At most three local attempts, never a claim of delivery.
             for (int i = 0; i < 3; i++) TryReleases(services.MonotonicSeconds(), true);
             if (capture != null) { try { capture.Dispose(); } catch (Exception ex) { Log(ex.Message); } capture = null; }
@@ -684,6 +866,7 @@ namespace EdgeGlow
                 if (services.ListenSystemEvents) {
                     SystemEvents.SessionSwitch -= OnSession;
                     SystemEvents.PowerModeChanged -= OnPower;
+                    SystemEvents.DisplaySettingsChanged -= OnDisplayTopology;
                 }
                 state = new EngineState { Message = "Stopping; waiting for lighting cleanup", ShutdownIncomplete = true, ReleasePending = true, OutputPolicy = "shutdown pending" };
                 if (worker == null) {
