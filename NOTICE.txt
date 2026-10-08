@@ -1,0 +1,4 @@
+EdgeGlow is an independent project, not affiliated with Govee.
+Original project sources are offered under the included MIT license.
+Protocol references (not bundled): GoveeDreamView, OpenRGB, Govee LAN documentation, SignalRGB H6609 integration.
+No owner configuration, logs, screenshots, credentials or specialist review archives are included.

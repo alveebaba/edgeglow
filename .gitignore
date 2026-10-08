@@ -1,0 +1,7 @@
+bin/
+obj/
+review-output/
+test-output/
+*.user
+*.log
+*.pdb

@@ -1,0 +1,62 @@
+{
+  "version": "0.1.0",
+  "status": "one-time experimental release, unmaintained",
+  "supportedDevice": "Govee G1 H6609",
+  "architecture": "Windows x64 / .NET Framework 4.8 / D3D11",
+  "exeSha256": "31b114338f96dad0b150d8825da6f4286204d4a9c74d75131b867a54cd7ee783",
+  "nativeDllSha256": "e117773018d6d331ecde49e1f760da077def58bd28254c043eb10ca30298400b",
+  "nativeSourceSha256": "4968be43700408abb5ac7638569c0a5a131c997a55ea4bc1d3307b053613a5f7",
+  "nativeRebuiltForPublicRelease": false,
+  "managedSourceSha256": {
+    "AssemblyInfo.cs": "b91e5b4413590fb2c27dff880265fc6a82a753666ccd11183e984a6da4a745ed",
+    "Capture.cs": "f6dbf274617166b5dfc1c9357b2cc47cad636161b20b9964121039d840b3e037",
+    "CaptureRecoveryTests.cs": "78b2a265a23364f26127ae6de4a7990bc873c90ddf432927a0d08a5b69b5c0a1",
+    "CaptureTests.cs": "8c98de8b015882dca16a9191e1b0e9c624db9d84916f6fb880e37322bbeac8ff",
+    "Diagnostics.cs": "e7ab40a112c486766f449a627c679ac57f75c017d89da355e925360504636414",
+    "Engine.cs": "a7aa879e5d15ec075613f8ae05e78ae9793397c5cd3a5f56e2e55846617bf5a0",
+    "Network.cs": "a3ed51c03bbc40ec8ca58f9d4d3066cfe4087cbc79dcc3dc7783f25a813855ec",
+    "Program.cs": "8f7fa50e56faefcb7e1beab9f0e2049d0781aa460c51377b8147eb0acde27812",
+    "ProtocolTests.cs": "0a0a52f182f882edb78ca26f0d07899e2e6e9627173b8190f83e5512ac8415f9",
+    "Settings.cs": "a4e83dcaafd38d22ee7425817d40b2cba287eebc18113857018a7f89d4f5a50f",
+    "ShutdownCoordinator.cs": "894f27dd1ab9c5c01e9e135fb1bd823972d57fdb1f18a585723f8b905901c7d4"
+  },
+  "tests": [
+    {
+      "name": "Public setup",
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "name": "Reply timing",
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "name": "Output diagnostics",
+      "passed": 10,
+      "failed": 0
+    },
+    {
+      "name": "Real components",
+      "passed": 23,
+      "failed": 0
+    },
+    {
+      "name": "Combined controls",
+      "passed": 17,
+      "failed": 0
+    },
+    {
+      "name": "Receiver retirement and release retries",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "name": "Zone layout",
+      "passed": 10,
+      "failed": 0
+    }
+  ],
+  "bounds": "Generated/injected managed checks only in this release preparation. No fresh GUI, physical strip, native GPU or long-duration acceptance run. The native DLL is the unchanged previously deployed capture library.",
+  "changes": "Sanitized factory settings; 18-zone public defaults; per-run first-device discovery pin; version metadata. Capture, protocol and color algorithms retained from the installed timing-corrected build."
+}

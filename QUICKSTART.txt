@@ -1,0 +1,20 @@
+EdgeGlow 0.1.0 — Windows x64 / Govee G1 H6609
+
+One-time experimental release. No ongoing maintenance or support.
+
+1. Enable LAN Control in the Govee Home phone app. PC and strip must share a LAN. Exit Govee Desktop.
+2. Extract this entire ZIP to a permanent folder. Double-click EdgeGlow.exe; it starts paused. Keep the EXE, DLL and config together.
+3. Allow local-network access if Windows Firewall prompts. EdgeGlow uses the first H6609 it discovers. Find strip retries discovery.
+4. Choose Display. Leave Picture area on Auto. Tune lighting: click a zone, check its physical position, adjust Rotate zones/Reverse strip and Apply settings. Tests clear after eight seconds.
+5. Resume sync. For automatic background use, check Start with Windows and Start syncing when opened. Closing the window hides to tray; Exit EdgeGlow stops it.
+
+Defaults:18 zones (6 top,3 right,6 bottom,3 left),24 updates/s,150 ms smoothness,65% brightness,20% edge depth,125% color strength,Ignore dark background ON.
+
+Supported: H6609 only; Windows10/11 x64,.NET Framework4.8,D3D11 GPU. Tested physically on one Windows11 PC and one strip. Firmware and mounting can vary. This build is unsigned. DRM video and some exclusive-fullscreen games may block capture; try borderless fullscreen. HDR and edge colors are approximate. Rare-blink stability remains unconfirmed after the timing fix.
+
+Settings/logs:%LOCALAPPDATA%\EdgeGlow. No screen images are saved or uploaded.
+To remove:uncheck Start with Windows,Exit EdgeGlow,delete this folder; optionally delete local settings/logs.
+
+Full documentation/source:https://github.com/alveebaba/edgeglow
+Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.0
+License:MIT (included).
