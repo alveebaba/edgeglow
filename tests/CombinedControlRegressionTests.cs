@@ -20,7 +20,7 @@ namespace EdgeGlow
         private static int passed, failed;
         public static int Main(string[] args)
         {
-            if (args.Length >= 3 && args[0] == "--child") return Child(args[1], args[2], args.Length > 3 && args[3] == "force");
+            if (args.Length >= 3 && args[0] == "--child") return Child(args[1], args[2], args.Length > 3, args.Length > 3 && args[3] == "owner-force");
             if (args.Length != 1) { Console.Error.WriteLine("Provide isolated evidence directory."); return 2; }
             traceRoot = Path.GetFullPath(args[0]); Directory.CreateDirectory(traceRoot);
             Run("C01_capture_retarget", CaptureRetarget);
@@ -40,6 +40,7 @@ namespace EdgeGlow
             Run("C05_discovery_returns_while_blocked", DiscoverReturnsWhileWorkerBlocked);
             Run("C05_process_lifetime", delegate { ProcessLifetime(false); });
             Run("C05_explicit_force_exit", delegate { ProcessLifetime(true); });
+            Run("C05_owner_force_exit_stays_stopped", delegate { ProcessLifetime(true, true); });
             Console.WriteLine("RESULT: " + passed + " passed; " + failed + " failed.");
             Console.WriteLine("Actual engine/network/parser; in-memory datagrams and generated pixels only. No desktop, GUI, LAN ports, settings or registry.");
             return failed == 0 ? 0 : 1;
@@ -210,6 +211,10 @@ namespace EdgeGlow
 
         private static void ProcessLifetime(bool force)
         {
+            ProcessLifetime(force, false);
+        }
+        private static void ProcessLifetime(bool force, bool expectedExit)
+        {
             string prefix = "Local\\EdgeGlowSynthetic-" + Guid.NewGuid().ToString("N");
             string childTrace = Path.Combine(traceRoot, currentCase+"_child.trace.tsv");
             using (EventWaitHandle entered = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-entered"))
@@ -219,7 +224,7 @@ namespace EdgeGlow
             {
                 child.StartInfo = new ProcessStartInfo {
                     FileName = System.Reflection.Assembly.GetExecutingAssembly().Location,
-                    Arguments = "--child \"" + prefix + "\" \"" + childTrace + "\"" + (force ? " force" : ""),
+                    Arguments = "--child \"" + prefix + "\" \"" + childTrace + "\"" + (force ? (expectedExit ? " owner-force" : " force") : ""),
                     UseShellExecute = false, CreateNoWindow = true,
                     RedirectStandardOutput = true, RedirectStandardError = true
                 };
@@ -230,7 +235,7 @@ namespace EdgeGlow
                     Check(stopping.WaitOne(3000), "child never requested shutdown");
                     if (force) {
                         Check(child.WaitForExit(2000), "explicit force-exit did not terminate the blocked synthetic child");
-                        Check(child.ExitCode==2, "explicit incomplete exit was not distinguished from successful cleanup");
+                        Check(child.ExitCode==(expectedExit ? 0 : 2), "forced exit code did not preserve owner intent or incomplete-test distinction");
                         Check(File.ReadAllText(childTrace).IndexOf("force-request",StringComparison.Ordinal)>=0,"force path was not explicit in trace");
                         return;
                     }
@@ -262,7 +267,7 @@ namespace EdgeGlow
                 }
             }
         }
-        private static int Child(string prefix, string output, bool force)
+        private static int Child(string prefix, string output, bool force, bool expectedExit)
         {
             EventWaitHandle entered = EventWaitHandle.OpenExisting(prefix + "-entered");
             EventWaitHandle release = EventWaitHandle.OpenExisting(prefix + "-release");
@@ -281,7 +286,7 @@ namespace EdgeGlow
 #else
             ShutdownCoordinator coordinator = new ShutdownCoordinator(f.Engine);
             coordinator.Request();
-            if (force) { f.Trace.Record("force-request", "", false, "explicit incomplete exit; no delivery or cleanup claim"); coordinator.ForceExit(); }
+            if (force) { f.Trace.Record("force-request", "", false, "explicit incomplete exit; no delivery or cleanup claim"); if (expectedExit) coordinator.ForceExit(true); else coordinator.ForceExit(); }
             bool complete = coordinator.WaitForCompletion(4000);
             f.Trace.Record("coordinator-return", "", complete, complete ? "completed" : "pending; foreground worker retains lifetime");
 #endif

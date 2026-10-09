@@ -16,8 +16,15 @@ namespace EdgeGlow
         }
         public void Request() { Requested = true; engine.RequestStop(); }
         public bool WaitForCompletion(int timeoutMs) { Request(); return engine.WaitForShutdown(timeoutMs); }
-        // Only an explicit owner action (or isolated test child) invokes force exit.
-        // Exit code 2 identifies abandoned cleanup; no release-delivery claim is made.
-        public void ForceExit() { Request(); Forced = true; Environment.Exit(2); }
+        // Explicit owner exit, fatal-cleanup timeout and isolated tests use this.
+        // Diagnostic/test callers use exit 2 for abandoned cleanup. Explicit owner
+        // exit uses 0 to stay stopped; neither code establishes release delivery.
+        public void ForceExit() { ForceExit(false); }
+        public void ForceExit(bool expectedExit)
+        {
+            Request(); Forced = true;
+            // An owner-requested exit must remain stopped when Windows recovery is enabled.
+            Environment.Exit(expectedExit ? 0 : 2);
+        }
     }
 }

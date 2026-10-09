@@ -203,6 +203,9 @@ namespace EdgeGlow
         private Thread worker;
         private bool started, disposed, competitor, sessionActive, previouslyReachable;
         private volatile bool shutdownCompleted;
+        private Exception workerFault;
+        private readonly Queue<string> pendingSystemEvents = new Queue<string>();
+        private int droppedSystemEvents;
         private bool testClearPending, testRaw, offEpisode, hasActivated;
         private int resumeVersion, appliedResumeVersion, offRecoveryAttempts;
         private long controlVersion;
@@ -232,6 +235,7 @@ namespace EdgeGlow
 
         public EngineState State { get { return state; } }
         public bool ShutdownCompleted { get { return shutdownCompleted; } }
+        public Exception WorkerFault { get { return Interlocked.CompareExchange(ref workerFault, null, null); } }
         public bool Paused {
             get { return paused; }
             set {
@@ -345,6 +349,7 @@ namespace EdgeGlow
                 if (quit || displayPowerState == value) return;
                 bool wasOff = displayOff;
                 displayPowerState = value; displayOff = value == 0;
+                QueueSystemEventLocked("Windows display power state: " + (value == 0 ? "Off" : value == 1 ? "On" : "Dimmed") + " (" + value + ")");
                 if (wasOff == displayOff) return;
                 controlVersion++;
                 if (displayOff) { standbyFreshImage = false; CancelTestLocked(); }
@@ -425,9 +430,26 @@ namespace EdgeGlow
             if (standbyTransport.HasStandby(standbyIdentity)) sessionActive = false;
             return true;
         }
+        private void QueueSystemEventLocked(string message)
+        {
+            // Native callbacks only enqueue. The engine worker performs disk logging.
+            if (pendingSystemEvents.Count >= 32) { pendingSystemEvents.Dequeue(); droppedSystemEvents++; }
+            pendingSystemEvents.Enqueue(message + "; receivedUtc=" + DateTime.UtcNow.ToString("o"));
+        }
+        private void DrainSystemEvents()
+        {
+            string[] events; int dropped;
+            lock (controlGate) {
+                if (pendingSystemEvents.Count == 0 && droppedSystemEvents == 0) return;
+                events = pendingSystemEvents.ToArray(); pendingSystemEvents.Clear(); dropped = droppedSystemEvents; droppedSystemEvents = 0;
+            }
+            if (dropped != 0) Log("System event diagnostics dropped " + dropped + " older entries.");
+            foreach (string message in events) Log(message);
+        }
         private void OnSession(object sender, SessionSwitchEventArgs e)
         {
             lock (controlGate) {
+                QueueSystemEventLocked("Windows session notification: " + e.Reason);
                 if (e.Reason == SessionSwitchReason.SessionLock || e.Reason == SessionSwitchReason.RemoteDisconnect || e.Reason == SessionSwitchReason.ConsoleDisconnect) SetSessionBlocked(true, suspended);
                 if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.RemoteConnect || e.Reason == SessionSwitchReason.ConsoleConnect) SetSessionBlocked(false, suspended);
             }
@@ -435,6 +457,7 @@ namespace EdgeGlow
         private void OnPower(object sender, PowerModeChangedEventArgs e)
         {
             lock (controlGate) {
+                QueueSystemEventLocked("Windows power notification: " + e.Mode);
                 if (e.Mode == PowerModes.Suspend) SetSessionBlocked(sessionLocked, true);
                 if (e.Mode == PowerModes.Resume) SetSessionBlocked(sessionLocked, false);
             }
@@ -632,6 +655,7 @@ namespace EdgeGlow
         {
             lock (tickGate) {
                 if (disposed || quit) return;
+                DrainSystemEvents();
                 Stopwatch work = Stopwatch.StartNew();
                 AppSettings config = settings;
                 double now = services.MonotonicSeconds();
@@ -838,7 +862,22 @@ namespace EdgeGlow
                     int remaining = (int)Math.Max(1, (displayOff || selectedDisplayMissing || sessionLocked || suspended ? 100 : paused ? 100 : 1000.0 / settings.Fps) - timer.Elapsed.TotalMilliseconds);
                     while (remaining > 0 && !quit) { int delay = Math.Min(remaining, 50); Thread.Sleep(delay); remaining -= delay; }
                 }
-            } finally { lock (tickGate) { Shutdown(); } }
+            } catch (Exception ex) {
+                RecordWorkerFault(ex, "screen worker");
+                try { RequestStop(); } catch (Exception stopError) { RecordWorkerFault(stopError, "worker stop"); }
+            } finally {
+                RunCleanup();
+            }
+        }
+        private void RunCleanup()
+        {
+            try { lock (tickGate) { DrainSystemEvents(); Shutdown(); } }
+            catch (Exception ex) { RecordWorkerFault(ex, "worker cleanup"); }
+        }
+        private void RecordWorkerFault(Exception ex, string phase)
+        {
+            Interlocked.CompareExchange(ref workerFault, ex, null);
+            try { Log("Fatal engine failure during " + phase + ": " + ex); } catch { }
         }
         private void Shutdown()
         {
@@ -870,7 +909,7 @@ namespace EdgeGlow
                 }
                 state = new EngineState { Message = "Stopping; waiting for lighting cleanup", ShutdownIncomplete = true, ReleasePending = true, OutputPolicy = "shutdown pending" };
                 if (worker == null) {
-                    worker = new Thread(delegate() { lock (tickGate) { Shutdown(); } }) { IsBackground = false, Name = "EdgeGlow cleanup" };
+                    worker = new Thread(RunCleanup) { IsBackground = false, Name = "EdgeGlow cleanup" };
                     worker.Start();
                 }
             }

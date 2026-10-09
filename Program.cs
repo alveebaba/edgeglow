@@ -11,15 +11,17 @@ namespace EdgeGlow
 {
     internal static class Program
     {
+        private static AppFailureRecovery recovery;
+        private static bool recoveryPaused;
         [STAThread]
         private static void Main(string[] args)
         {
-            Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             if (Array.IndexOf(args, "--self-test") >= 0) { RunTests(); return; }
             if (Array.IndexOf(args, "--diagnose") >= 0) { Diagnostics.Run(); return; }
             if (Array.IndexOf(args, "--capture-test") >= 0) { Diagnostics.Run(false); return; }
             if (Array.IndexOf(args, "--ui-preview") >= 0)
             {
+                Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
                 using (MainWindow form = new MainWindow(false, null, true))
                 {
                     form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new Point(-32000, -32000);
@@ -28,7 +30,25 @@ namespace EdgeGlow
                 }
                 return;
             }
+            int recoveryAttempt = AppFailureRecovery.ReadAttempt(args);
+            AppFailureRecovery.DelayBeforeStart(recoveryAttempt, Thread.Sleep);
+            recoveryPaused = recoveryAttempt == 0 || Array.IndexOf(args, "--recovery-paused") >= 0;
+            Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             bool trayStart = Array.IndexOf(args, "--tray") >= 0;
+            bool primary = false; MainWindow current = null;
+            ThreadExceptionEventHandler uiFault = delegate(object sender, ThreadExceptionEventArgs e) {
+                try { if (current != null) current.RequestFatalExit(e.Exception, "UI thread"); else { RecordFatal(e.Exception, "UI startup"); Application.Exit(); } }
+                catch (Exception ex) { bool expected = current != null && current.ExpectedExitRequested; RecordFatal(ex, "fatal UI cleanup", expected); RecoverFromFailure(current); Environment.Exit(expected ? 0 : 2); }
+            };
+            UnhandledExceptionEventHandler lastChance = delegate(object sender, UnhandledExceptionEventArgs e) {
+                bool expected = current != null && current.ExpectedExitRequested;
+                RecordFatal(e.ExceptionObject as Exception, "unhandled process exception", expected);
+                if (expected) { Storage.Log("Expected exit abandoning cleanup after an unhandled failure; delivery is unconfirmed."); Environment.Exit(0); }
+                Storage.Log("Unexpected last-chance exit abandoning cleanup; delivery is unconfirmed.");
+                RecoverFromFailure(current); Environment.Exit(2);
+            };
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += uiFault; AppDomain.CurrentDomain.UnhandledException += lastChance;
             try
             {
                 bool created;
@@ -36,11 +56,47 @@ namespace EdgeGlow
                 using (EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\EdgeGlow.show"))
                 {
                     if (!created) { if (!trayStart) show.Set(); return; }
-                    try { Application.Run(new MainWindow(trayStart, show, false)); }
+                    primary = true;
+                    recovery = AppFailureRecovery.CreateDefault(typeof(Program).Assembly.Location, recoveryAttempt, Storage.Log);
+                    Storage.Log("Application started: version=" + typeof(Program).Assembly.GetName().Version + "; pid=" + Process.GetCurrentProcess().Id + "; hidden=" + trayStart);
+                    try { using (current = new MainWindow(trayStart, show, false, recoveryAttempt > 0 ? (bool?)recoveryPaused : null)) { recovery.MarkRunning(); Application.Run(current); } }
                     finally { singleton.ReleaseMutex(); }
                 }
             }
-            catch (Exception ex) { Storage.Log(ex.ToString()); if (!trayStart) MessageBox.Show(ex.Message, "EdgeGlow could not start", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            catch (Exception ex) {
+                bool expected = current != null && current.ExpectedExitRequested;
+                RecordFatal(ex, "application startup or lifetime", expected);
+                if (current != null && !current.CleanupCompleted) { Storage.Log("Exit abandoning incomplete cleanup; expectedExit=" + expected + "; delivery is unconfirmed."); RecoverFromFailure(current); Environment.Exit(expected ? 0 : 2); }
+                if (!trayStart) MessageBox.Show(ex.Message, "EdgeGlow could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            } finally {
+                Application.ThreadException -= uiFault; AppDomain.CurrentDomain.UnhandledException -= lastChance;
+                if (primary) {
+                    Storage.Log("Application exit completed: pid=" + Process.GetCurrentProcess().Id + "; exitCode=" + Environment.ExitCode + "; cleanupCompleted=" + (current != null && current.CleanupCompleted));
+                    RecoverFromFailure(current);
+                }
+            }
+        }
+        internal static void MarkExpectedExit()
+        {
+            Environment.ExitCode = 0; if (recovery != null) recovery.Suppress();
+        }
+        internal static void RememberRecoveryPause(bool paused) { recoveryPaused = paused; }
+        internal static void RecoverFromFailure(MainWindow current)
+        {
+            if (recovery == null) return;
+            bool expected = current != null && current.ExpectedExitRequested;
+            if (expected) { recovery.Suppress(); return; }
+            if (Environment.ExitCode == 0) return;
+            if (current != null) recoveryPaused = current.PausedForRecovery;
+            recovery.TryRecover(false, recoveryPaused);
+        }
+        internal static bool ShouldFailForWorkerFault(Exception fault, bool exitRequested, bool fatalExit)
+        { return fault != null && !exitRequested && !fatalExit; }
+        internal static void RecordFatal(Exception ex, string phase) { RecordFatal(ex, phase, false); }
+        internal static void RecordFatal(Exception ex, string phase, bool expectedExit)
+        {
+            Environment.ExitCode = expectedExit ? 0 : 1;
+            Storage.Log("Application failure during " + phase + "; expectedExit=" + expectedExit + ": " + (ex == null ? "non-Exception failure" : ex.ToString()));
         }
         private static void RunTests()
         {
@@ -67,7 +123,10 @@ namespace EdgeGlow
         private AppSettings settings;
         private NotifyIcon tray;
         private System.Windows.Forms.Timer timer;
-        private bool exiting, startsHidden, preview;
+        private bool exiting, startsHidden, preview, fatalExit, cleanupFaultLogged;
+        internal bool ExpectedExitRequested { get { return exiting && !fatalExit; } }
+        internal bool PausedForRecovery { get { return engine == null ? !settings.AutoSync : engine.Paused; } }
+        internal bool CleanupCompleted { get { return engine == null || engine.ShutdownCompleted; } }
         private Label status, detail, metrics, device;
         private ComboBox monitor, area;
         private NumericUpDown brightness, saturation, smoothing, fps, edge, rotate, zone;
@@ -80,10 +139,12 @@ namespace EdgeGlow
         private string rememberedIp;
         private DateTime nextHealth = DateTime.MinValue;
 
-        public MainWindow(bool hidden, EventWaitHandle show, bool previewOnly)
+        public MainWindow(bool hidden, EventWaitHandle show, bool previewOnly) : this(hidden, show, previewOnly, null) { }
+        internal MainWindow(bool hidden, EventWaitHandle show, bool previewOnly, bool? recoveryPaused)
         {
             startsHidden = hidden; showEvent = show; preview = previewOnly;
             settings = Storage.Load(); rememberedIp = settings.DeviceIp;
+            if (!preview) Program.RememberRecoveryPause(recoveryPaused ?? !settings.AutoSync);
             Text = "EdgeGlow | Your screen, beyond the edges";
             BackColor = background; ForeColor = foreground; Font = new Font("Segoe UI", 10);
             AutoScaleMode = AutoScaleMode.Font; ClientSize = new Size(880, 620); MinimumSize = new Size(870, 650);
@@ -92,15 +153,15 @@ namespace EdgeGlow
             BuildUi();
             if (!preview)
             {
-                engine = new GlowEngine(settings); shutdown = new ShutdownCoordinator(engine);
+                engine = new GlowEngine(settings); AppFailureRecovery.RestorePause(engine, recoveryPaused); shutdown = new ShutdownCoordinator(engine);
                 displayPower = new DisplayPowerMonitor(engine.SetDisplayPowerState, Storage.Log);
-                engine.Start();
+                Storage.Log("Display notification registration: registered=" + displayPower.Registered + "; initialState=" + displayPower.State + " (-1 unknown, 0 off, 1 on, 2 dimmed)");
                 ContextMenuStrip menu = new ContextMenuStrip();
                 menu.Items.Add("Open EdgeGlow", null, delegate { Reveal(); });
                 menu.Items.Add("Pause / resume", null, delegate { engine.Paused = !engine.Paused; });
                 menu.Items.Add("Rediscover strip", null, delegate { engine.Discover(); });
                 menu.Items.Add(new ToolStripSeparator());
-                menu.Items.Add("Exit EdgeGlow", null, delegate { exiting = true; Close(); });
+                menu.Items.Add("Exit EdgeGlow", null, delegate { RequestExpectedExit(); Close(); });
                 tray = new NotifyIcon { Icon = Icon, Text = "EdgeGlow - screen lighting", Visible = true, ContextMenuStrip = menu };
                 tray.DoubleClick += delegate { Reveal(); };
                 timer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -116,14 +177,19 @@ namespace EdgeGlow
             }
             FormClosing += delegate(object sender, FormClosingEventArgs e)
             {
+                if (!preview && e.CloseReason == CloseReason.WindowsShutDown) RequestExpectedExit();
                 if (!exiting && !preview && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); return; }
                 if (!preview && shutdown != null && !shutdown.Completed) {
                     e.Cancel = true; exiting = true;
-                    if (!shutdown.Requested) { stoppingClock.Start(); shutdown.Request(); }
-                    Reveal(); status.Text = "Stopping EdgeGlow...";
+                    if (!shutdown.Requested) {
+                        Storage.Log("Application exit requested: " + (fatalExit ? "fatal failure" : e.CloseReason.ToString()) + "; lighting cleanup requested, delivery is unconfirmed.");
+                        stoppingClock.Start(); shutdown.Request();
+                    }
+                    if (!fatalExit) Reveal(); status.Text = "Stopping EdgeGlow...";
                     detail.Text = "Waiting for lighting cleanup. This window will close when it finishes.";
                 }
             };
+            if (!preview) engine.Start();
         }
         private Label LabelText(string text, float size, Color color)
         { return new Label { Text = text, AutoSize = false, Dock = DockStyle.Fill, ForeColor = color, Font = new Font("Segoe UI", size), TextAlign = ContentAlignment.MiddleLeft }; }
@@ -205,8 +271,14 @@ namespace EdgeGlow
             };
             actions.Controls.Add(toggle); actions.Controls.Add(tuningButton); actions.Controls.Add(apply);
             actions.Controls.Add(ButtonText("Find strip", delegate { if (engine != null) engine.Discover(); }));
-            actions.Controls.Add(ButtonText("Exit EdgeGlow", delegate { exiting = true; Close(); }));
-            forceExit = ButtonText("Exit now", delegate { if (shutdown != null && shutdown.Pending) shutdown.ForceExit(); });
+            actions.Controls.Add(ButtonText("Exit EdgeGlow", delegate { RequestExpectedExit(); Close(); }));
+            forceExit = ButtonText("Exit now", delegate {
+                if (shutdown != null && shutdown.Pending) {
+                    RequestExpectedExit();
+                    Storage.Log("Application force exit requested: expectedOwnerExit=True; cleanup abandoned, delivery is unconfirmed.");
+                    shutdown.ForceExit(true);
+                }
+            });
             forceExit.Visible = false; actions.Controls.Add(forceExit); actions.Controls.SetChildIndex(forceExit, 0);
             layout.Controls.Add(actions, 0, 9);
             device = LabelText("H6609 G1  |  " + settings.ZoneCount + " screen zones  |  Close to tray; Exit stops EdgeGlow.", 9, muted); layout.Controls.Add(device, 0, 10);
@@ -227,8 +299,17 @@ namespace EdgeGlow
         private void Tick(object sender, EventArgs args)
         {
             if (showEvent != null && showEvent.WaitOne(0)) Reveal();
+            if (Program.ShouldFailForWorkerFault(engine.WorkerFault, exiting, fatalExit)) { RequestFatalExit(engine.WorkerFault, "screen worker"); return; }
             if (shutdown != null && shutdown.Requested) {
+                if (!fatalExit && engine.WorkerFault != null && !cleanupFaultLogged) {
+                    cleanupFaultLogged = true;
+                    Storage.Log("Cleanup failed after an expected exit request; exit remains intentional (code 0): " + engine.WorkerFault);
+                }
                 if (shutdown.Completed) { Close(); return; }
+                if (fatalExit && stoppingClock.ElapsedMilliseconds >= 4000) {
+                    Storage.Log("Fatal exit abandoning cleanup after four seconds; delivery is unconfirmed.");
+                    Program.RecoverFromFailure(this); shutdown.ForceExit(false); return;
+                }
                 status.Text = "Stopping EdgeGlow...";
                 detail.Text = "Lighting cleanup is still pending. Exit now may leave the lights unchanged.";
                 toggle.Enabled = false; forceExit.Visible = stoppingClock.ElapsedMilliseconds >= 4000;
@@ -260,12 +341,23 @@ namespace EdgeGlow
                 try
                 {
                     Directory.CreateDirectory(Storage.DirectoryPath);
-                    string json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { updatedUtc = DateTime.UtcNow.ToString("o"), status = s.Message, detail = s.Detail, sending = s.Sending, zoneCount = settings.ZoneCount, edgeDepthPercent = settings.EdgePercent, ignoreDarkBackground = settings.IgnoreBlackPixels, deviceIp = s.Ip, lastReplyUtc = s.LastReply.ToString("o"), freshFrames = s.FreshFrames, loopIterations = s.LoopIterations, captureAttempts = s.CaptureAttempts, idleResults = s.IdleResults, captureErrors = s.CaptureErrors, missingFrames = s.MissingFrames, protectedResults = s.ProtectedResults, reprocessedFrames = s.ReprocessedFrames, datagrams = s.Datagrams, allBlackColorDatagrams = s.AllBlackColorDatagrams, nearBlackColorDatagrams = s.NearBlackColorDatagrams, nearBlackMaximumChannel = 3, lastColorPeak = s.LastColorPeak, lastColorWasTest = s.LastColorWasTest, lastColorSendUtc = s.LastColorSendUtc.ToString("o"), lastNearBlackSendUtc = s.LastNearBlackSendUtc.ToString("o"), lastAllBlackSendUtc = s.LastAllBlackSendUtc.ToString("o"), lastNearBlackWasTest = s.LastNearBlackWasTest, lastAllBlackWasTest = s.LastAllBlackWasTest, maximumColorSendGapUtc = s.MaximumColorSendGapUtc.ToString("o"), maximumColorSendGapWasTest = s.MaximumColorSendGapWasTest, lastColorSendGapSeconds = s.LastColorSendGapSeconds, maximumColorSendGapSeconds = s.MaximumColorSendGapSeconds, activationAttemptsTotal = s.ActivationAttemptsTotal, lastActivationAttemptUtc = s.LastActivationAttemptUtc.ToString("o"), lastActivationSucceededUtc = s.LastActivationSucceededUtc.ToString("o"), lastActivationReason = s.LastActivationReason, processedPowerOffObservations = s.PowerOffReports, lastPowerOffReportUtc = s.LastPowerOffReportUtc.ToString("o"), outputDiagnosticEvents = s.OutputDiagnosticEvents, outputDiagnosticEventLimit = 64, outputDiagnosticsScope = "Successful local color sends only; no physical acknowledgement. Current-stream gaps exclude new activation and test/ambient crossings. Off observations can recount cached fresh status after resume/reset. RAM event history is bounded; legitimate dark content is included.", outputPolicy = s.OutputPolicy, lastUsableImageUtc = s.LastUsableImageUtc.ToString("o"), imageAgeSeconds = s.ImageAgeSeconds, sessionGeneration = s.SessionGeneration, releasePending = s.ReleasePending, settingsWarning = Storage.LoadWarning, workMs = s.WorkMs, frameWidth = s.FrameWidth, frameHeight = s.FrameHeight, activeX = s.ActiveArea.X, activeY = s.ActiveArea.Y, activeWidth = s.ActiveArea.Width, activeHeight = s.ActiveArea.Height, workingSetBytes = Environment.WorkingSet });
+                    string json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { updatedUtc = DateTime.UtcNow.ToString("o"), status = s.Message, detail = s.Detail, sending = s.Sending, zoneCount = settings.ZoneCount, edgeDepthPercent = settings.EdgePercent, ignoreDarkBackground = settings.IgnoreBlackPixels, deviceIp = s.Ip, lastReplyUtc = s.LastReply.ToString("o"), freshFrames = s.FreshFrames, loopIterations = s.LoopIterations, captureAttempts = s.CaptureAttempts, idleResults = s.IdleResults, captureErrors = s.CaptureErrors, missingFrames = s.MissingFrames, protectedResults = s.ProtectedResults, reprocessedFrames = s.ReprocessedFrames, datagrams = s.Datagrams, allBlackColorDatagrams = s.AllBlackColorDatagrams, nearBlackColorDatagrams = s.NearBlackColorDatagrams, nearBlackMaximumChannel = 3, lastColorPeak = s.LastColorPeak, lastColorWasTest = s.LastColorWasTest, lastColorSendUtc = s.LastColorSendUtc.ToString("o"), lastNearBlackSendUtc = s.LastNearBlackSendUtc.ToString("o"), lastAllBlackSendUtc = s.LastAllBlackSendUtc.ToString("o"), lastNearBlackWasTest = s.LastNearBlackWasTest, lastAllBlackWasTest = s.LastAllBlackWasTest, maximumColorSendGapUtc = s.MaximumColorSendGapUtc.ToString("o"), maximumColorSendGapWasTest = s.MaximumColorSendGapWasTest, lastColorSendGapSeconds = s.LastColorSendGapSeconds, maximumColorSendGapSeconds = s.MaximumColorSendGapSeconds, activationAttemptsTotal = s.ActivationAttemptsTotal, lastActivationAttemptUtc = s.LastActivationAttemptUtc.ToString("o"), lastActivationSucceededUtc = s.LastActivationSucceededUtc.ToString("o"), lastActivationReason = s.LastActivationReason, processedPowerOffObservations = s.PowerOffReports, lastPowerOffReportUtc = s.LastPowerOffReportUtc.ToString("o"), outputDiagnosticEvents = s.OutputDiagnosticEvents, outputDiagnosticEventLimit = 64, outputDiagnosticsScope = "Successful local color sends only; no physical acknowledgement. Current-stream gaps exclude new activation and test/ambient crossings. Off observations can recount cached fresh status after resume/reset. RAM event history is bounded; legitimate dark content is included.", outputPolicy = s.OutputPolicy, lastUsableImageUtc = s.LastUsableImageUtc.ToString("o"), imageAgeSeconds = s.ImageAgeSeconds, sessionGeneration = s.SessionGeneration, displayPowerState = s.DisplayPowerState, automaticStandby = s.AutomaticStandby, standbyReason = s.StandbyReason, standbyAttempts = s.StandbyAttempts, releasePending = s.ReleasePending, settingsWarning = Storage.LoadWarning, workMs = s.WorkMs, frameWidth = s.FrameWidth, frameHeight = s.FrameHeight, activeX = s.ActiveArea.X, activeY = s.ActiveArea.Y, activeWidth = s.ActiveArea.Width, activeHeight = s.ActiveArea.Height, workingSetBytes = Environment.WorkingSet });
                     File.WriteAllText(Path.Combine(Storage.DirectoryPath, "status.json"), json);
                 }
                 catch { }
             }
             lastTick = DateTime.UtcNow; lastFrames = s.FreshFrames; lastDatagrams = s.Datagrams;
+        }
+        private void RequestExpectedExit()
+        {
+            fatalExit = false; exiting = true; Program.MarkExpectedExit();
+        }
+        internal void RequestFatalExit(Exception ex, string phase)
+        {
+            if (fatalExit) return;
+            if (ExpectedExitRequested) { Program.RecordFatal(ex, phase, true); Close(); return; }
+            Program.RememberRecoveryPause(PausedForRecovery);
+            Program.RecordFatal(ex, phase); fatalExit = true; exiting = true; Close();
         }
         protected override void SetVisibleCore(bool value)
         {

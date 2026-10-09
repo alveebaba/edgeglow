@@ -43,6 +43,7 @@ namespace EdgeGlow
 
     public static class Storage
     {
+        private static readonly object LogGate = new object();
         public static readonly string DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EdgeGlow");
         public static readonly string SettingsPath = Path.Combine(DirectoryPath, "settings.json");
         public static string LoadWarning = "";
@@ -83,10 +84,13 @@ namespace EdgeGlow
         {
             try
             {
-                Directory.CreateDirectory(DirectoryPath);
-                string path = Path.Combine(DirectoryPath, "events.log");
-                if (File.Exists(path) && new FileInfo(path).Length > 262144) { File.Copy(path, path + ".previous", true); File.WriteAllText(path, ""); }
-                File.AppendAllText(path, DateTime.UtcNow.ToString("o") + " " + message + Environment.NewLine);
+                lock (LogGate)
+                {
+                    Directory.CreateDirectory(DirectoryPath);
+                    string path = Path.Combine(DirectoryPath, "events.log");
+                    if (File.Exists(path) && new FileInfo(path).Length > 262144) { File.Copy(path, path + ".previous", true); File.WriteAllText(path, ""); }
+                    File.AppendAllText(path, DateTime.UtcNow.ToString("o") + " " + message + Environment.NewLine);
+                }
             } catch { }
         }
     }

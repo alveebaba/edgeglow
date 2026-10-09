@@ -1,4 +1,4 @@
-EdgeGlow 0.1.1 — Windows x64 / Govee G1 H6609
+EdgeGlow 0.1.2 — Windows x64 / Govee G1 H6609
 
 One-time experimental release. No ongoing maintenance or support.
 
@@ -7,6 +7,8 @@ One-time experimental release. No ongoing maintenance or support.
 3. Allow local-network access if Windows Firewall prompts. EdgeGlow uses the first H6609 it discovers. Find strip retries discovery.
 4. Choose Display. Leave Picture area on Auto. Tune lighting: click a zone, check its physical position, adjust Rotate zones/Reverse strip and Apply settings. Tests clear after eight seconds.
 5. Resume sync. For automatic background use, check Start with Windows and Start syncing when opened. Closing the window hides to tray; Exit EdgeGlow stops it.
+
+Startup launches the app directly into the tray at login. Caught application failures retry hidden after10seconds, at most3times, with the budget reset after10minutes of operation. Normal/force Exit stays stopped until reopened or the next sign-in. No separate watchdog. Forced termination/uncatchable crashes cannot trigger recovery.
 
 Defaults:18 zones (6 top,3 right,6 bottom,3 left),24 updates/s,150 ms smoothness,65% brightness,20% edge depth,125% color strength,Ignore dark background ON.
 
@@ -18,5 +20,5 @@ Settings/logs:%LOCALAPPDATA%\EdgeGlow. No screen images are saved or uploaded.
 To remove:uncheck Start with Windows,Exit EdgeGlow,delete this folder; optionally delete local settings/logs.
 
 Full documentation/source:https://github.com/alveebaba/edgeglow
-Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.1
+Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.2
 License:MIT (included).

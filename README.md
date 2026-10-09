@@ -4,7 +4,7 @@ Lightweight Windows screen lighting for the **Govee Gaming Light Strip G1 (H6609
 
 **One-time, experimental release. This repository is archived and is not maintained. No support or future updates are promised.** The source is available under the MIT license so others can use and maintain their own forks.
 
-[Download EdgeGlow 0.1.1 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.1/EdgeGlow-v0.1.1-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.1)
+[Download EdgeGlow 0.1.2 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.2/EdgeGlow-v0.1.2-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.2)
 
 ## Quick start
 
@@ -13,6 +13,8 @@ Lightweight Windows screen lighting for the **Govee Gaming Light Strip G1 (H6609
 3. Allow local-network communication if Windows Firewall prompts. Use **Find strip** if discovery has not found it. EdgeGlow selects the first H6609 it discovers and keeps that identity; it controls one strip.
 4. Choose your **Display** and leave **Picture area** on **Auto: follow the visible picture**. Open **Tune lighting**, click a zone on the diagram and check that it lights the corresponding section. Identification clears after eight seconds. Adjust **Rotate zones** and **Reverse strip**, then click **Apply settings**.
 5. Click **Resume sync**. After checking the lights, enable **Start with Windows** and **Start syncing when opened** if desired. Close the window to leave EdgeGlow in the tray. Use **Exit EdgeGlow** to stop it.
+
+**Start with Windows** launches EdgeGlow directly into the tray at login. After a failure the app can catch, it retries hidden after ten seconds, up to three times; the retry budget resets after ten minutes of operation. There is no separate watchdog. Choosing **Exit EdgeGlow**, including its explicit force-exit option, leaves it stopped until reopened or the next sign-in. Forced termination and uncatchable crashes cannot trigger this recovery.
 
 Requires Windows 10/11 x64, .NET Framework 4.8 and a GPU/driver supporting D3D11 Desktop Duplication. Development and physical checks were performed on Windows 11 with one H6609; other PCs and firmware have not been physically validated. The executable is unsigned.
 
@@ -30,7 +32,7 @@ While syncing, EdgeGlow requests lights off when Windows reports the session dis
 
 Ten continuous seconds without a usable capture also requests lights off, then waits for a fresh image. Brief capture interruptions hold the last colors. A healthy still picture remains active; lack of new animation is not a sleep signal. Black pictures remain ordinary content and naturally produce dark light colors.
 
-Display power uses Windows [session display notifications](https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids). A monitor's physical power button may not notify Windows if the monitor keeps its video connection active. This is especially relevant with multiple displays. No power-policy settings are changed. Off/wake commands use bounded local UDP attempts; a send does not establish physical delivery, particularly during system suspend or network loss.
+Display power uses Windows [session display notifications](https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids). A monitor's physical power button may not notify Windows if the monitor keeps its video connection active. This is especially relevant with multiple displays. The app does not change Windows screen-off or sleep timers. Off/wake commands use bounded local UDP attempts; a send does not establish physical delivery, particularly during system suspend or network loss.
 
 ## Limits
 
@@ -41,6 +43,8 @@ Protected/DRM video may appear black. Borderless fullscreen generally captures m
 The build includes a correction for a reply-timing race that unnecessarily restarted the lighting stream. Its regression tests passed. Long-duration operation and the rare physical blink have not been conclusively verified after that correction. This snapshot makes no uninterrupted-operation guarantee.
 
 ## Local data and removal
+
+Startup, power-state changes, requested exits and unexpected failures are recorded locally to help distinguish a stopped app from a missed light command. A crash may prevent the final record from being written.
 
 Settings and small diagnostic files are stored in **%LOCALAPPDATA%\EdgeGlow**. They can contain your strip ID, local IP, timing and crop bounds. They do not contain screen images; no screenshots are recorded or uploaded. The app's network traffic is local Govee discovery, status and light commands on UDP ports 4001–4003.
 
