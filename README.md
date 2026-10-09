@@ -4,7 +4,7 @@ Lightweight Windows screen lighting for the **Govee Gaming Light Strip G1 (H6609
 
 **One-time, experimental release. This repository is archived and is not maintained. No support or future updates are promised.** The source is available under the MIT license so others can use and maintain their own forks.
 
-[Download EdgeGlow 0.1.2 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.2/EdgeGlow-v0.1.2-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.2)
+[Download EdgeGlow 0.1.3 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.3/EdgeGlow-v0.1.3-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.3)
 
 ## Quick start
 
@@ -31,6 +31,8 @@ The default layout has **18 zones: six top, three right, six bottom and three le
 While syncing, EdgeGlow requests lights off when Windows reports the session display off, the PC locks or sleeps, or the selected display disconnects. Capture stops during these states. Lighting resumes automatically after the display/session is available and capture provides a fresh usable image. A manual **Pause** stays paused after wake.
 
 Ten continuous seconds without a usable capture also requests lights off, then waits for a fresh image. Brief capture interruptions hold the last colors. A healthy still picture remains active; lack of new animation is not a sleep signal. Black pictures remain ordinary content and naturally produce dark light colors.
+
+Windows can black out a protected video region while still returning the rest of the desktop. EdgeGlow uses that already-masked image, so an open or minimized protected-video window does not by itself trigger capture-failure standby. The protected region remains black; this does not bypass video protection.
 
 Display power uses Windows [session display notifications](https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids). A monitor's physical power button may not notify Windows if the monitor keeps its video connection active. This is especially relevant with multiple displays. The app does not change Windows screen-off or sleep timers. Off/wake commands use bounded local UDP attempts; a send does not establish physical delivery, particularly during system suspend or network loss.
 

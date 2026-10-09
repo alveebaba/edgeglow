@@ -127,14 +127,19 @@ namespace EdgeGlow
                 _hasFrame = HasCurrentGenerationFrame = HasNewFrame = true;
                 HasFreshDesktopFrame = read.Result == 1; IsReprocessedFrame = read.Result == 2;
                 ImageGeneration = nextImageGeneration;
-                ProtectedContentMasked = false; LastError = ""; LastHResult = 0;
+                // The mask is informational: Windows has already excluded those pixels.
+                // Only a fresh unmasked image clears a previous mask warning.
+                if (HasFreshDesktopFrame) ProtectedContentMasked = (read.Flags & 4) != 0;
+                else if ((read.Flags & 4) != 0) ProtectedContentMasked = true;
+                LastError = ""; LastHResult = 0;
                 if (HasFreshDesktopFrame) { _lastFreshMs = _monotonicMs(); LastUsableFrameUtc = DateTime.UtcNow; }
             }
-            else if (read.Result < 0 || (read.Flags & 4) != 0)
+            else if (read.Result < 0)
             {
                 HasCurrentGenerationFrame = false;
                 LastHResult = read.HResult;
-                if (read.Result == -2 || (read.Flags & 4) != 0)
+                if ((read.Flags & 4) != 0) ProtectedContentMasked = true;
+                if (read.Result == -2)
                 {
                     ProtectedContentMasked = true;
                     LastError = "Windows has excluded protected video from capture; holding the last colors.";
@@ -144,8 +149,9 @@ namespace EdgeGlow
             else
             {
                 HasCurrentGenerationFrame = continuingValidImage && usable;
-                // Idle or cursor-only success is never evidence that an error,
-                // protected image or obsolete generation has recovered.
+                if ((read.Flags & 4) != 0) ProtectedContentMasked = true;
+                // Idle or cursor-only success never recovers failed or obsolete
+                // pixels; a valid masked cache remains usable while static.
                 if (_hasFrame && !HasCurrentGenerationFrame && String.IsNullOrEmpty(LastError))
                     LastError = "Waiting for a usable image from the current capture session; holding the last colors.";
             }

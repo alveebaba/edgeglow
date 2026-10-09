@@ -1,4 +1,4 @@
-EdgeGlow 0.1.2 — Windows x64 / Govee G1 H6609
+EdgeGlow 0.1.3 — Windows x64 / Govee G1 H6609
 
 One-time experimental release. No ongoing maintenance or support.
 
@@ -20,5 +20,5 @@ Settings/logs:%LOCALAPPDATA%\EdgeGlow. No screen images are saved or uploaded.
 To remove:uncheck Start with Windows,Exit EdgeGlow,delete this folder; optionally delete local settings/logs.
 
 Full documentation/source:https://github.com/alveebaba/edgeglow
-Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.2
+Release:https://github.com/alveebaba/edgeglow/releases/tag/v0.1.3
 License:MIT (included).

@@ -128,7 +128,7 @@ struct NativeCapture {
     ComPtr<ID3D11Buffer> constants;
     D3D11_TEXTURE2D_DESC copiedDesc = {};
     bool acquired = false, haveImage = false, hdr = false, toneMapped = false;
-    bool currentImageValid = false, protectedBlocked = false, colorDirty = false;
+    bool currentImageValid = false, protectedMasked = false, colorDirty = false;
     UINT64 captureGeneration = 1, imageGeneration = 0, colorMetadataGeneration = 0;
     DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     int conversionKind = 0;
@@ -368,19 +368,37 @@ struct NativeCapture {
     }
 
     int Idle(BYTE* destination, int* flags, int* error) {
-        if (colorDirty && currentImageValid && imageGeneration == captureGeneration && !protectedBlocked) {
+        if (colorDirty && currentImageValid && imageGeneration == captureGeneration) {
             HRESULT hr = RenderCached(destination);
             if (FAILED(hr)) { *error = Fail(hr); return -1; }
-            *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0); *error = S_OK;
+            *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0) | (protectedMasked ? 4 : 0); *error = S_OK;
             return 2; // valid current-generation pixels reprocessed, not a new desktop image
         }
-        *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0) | (protectedBlocked ? 4 : 0);
+        *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0) | (protectedMasked ? 4 : 0);
         *error = static_cast<int>(lastError);
         return 0;
     }
 
+    int ReadAcquiredImage(const DXGI_OUTDUPL_FRAME_INFO& info, ID3D11Texture2D* image, BYTE* destination, int* flags, int* error) {
+        if (info.LastPresentTime.QuadPart == 0) {
+            // No desktop bitmap changed: preserve any valid Windows-provided cache.
+            // Pointer-only updates never establish pixels or clear the warning.
+            if (info.ProtectedContentMaskedOut) protectedMasked = true;
+            return Idle(destination, flags, error);
+        }
+        // Windows already blacked out protected pixels in this desktop image.
+        // The remaining desktop is usable; do not treat the mask as capture loss.
+        HRESULT hr = image ? Render(image, destination) : E_POINTER;
+        if (FAILED(hr)) { *error = Fail(hr); return -1; }
+        haveImage = currentImageValid = true;
+        protectedMasked = info.ProtectedContentMaskedOut != FALSE;
+        imageGeneration = captureGeneration; lastError = S_OK; *error = S_OK;
+        *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0) | (protectedMasked ? 4 : 0);
+        return 1;
+    }
+
     int Read(BYTE* destination, int bytes, int* flags, int* error) {
-        *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0) | (protectedBlocked ? 4 : 0); *error = static_cast<int>(lastError);
+        *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0) | (protectedMasked ? 4 : 0); *error = static_cast<int>(lastError);
         if (!destination || bytes < static_cast<int>(width * height * 4)) { *error = E_INVALIDARG; return -1; }
         if (!duplication) {
             if (GetTickCount64() < retryAt) return -1;
@@ -399,20 +417,12 @@ struct NativeCapture {
         if (hr == DXGI_ERROR_WAIT_TIMEOUT) return Idle(destination, flags, error);
         if (FAILED(hr)) { *error = Fail(hr); return -1; }
         acquired = true;
-        if (info.ProtectedContentMaskedOut) {
-            protectedBlocked = true; currentImageValid = false;
-            *flags |= 4; *error = S_OK; return -2;
-        }
-        // Pointer-only frames cannot clear protection or recover a generation.
-        if (info.LastPresentTime.QuadPart == 0) return Idle(destination, flags, error);
         ComPtr<ID3D11Texture2D> image;
-        hr = resource.As(&image);
-        if (SUCCEEDED(hr)) hr = Render(image.Get(), destination);
-        if (FAILED(hr)) { *error = Fail(hr); return -1; }
-        haveImage = currentImageValid = true; protectedBlocked = false;
-        imageGeneration = captureGeneration; lastError = S_OK; *error = S_OK;
-        *flags = (hdr ? 1 : 0) | (toneMapped ? 2 : 0);
-        return 1;
+        if (info.LastPresentTime.QuadPart != 0) {
+            hr = resource.As(&image);
+            if (FAILED(hr)) { *error = Fail(hr); return -1; }
+        }
+        return ReadAcquiredImage(info, image.Get(), destination, flags, error);
     }
 
 };
@@ -530,11 +540,11 @@ extern "C" __declspec(dllexport) int __cdecl EG_RenderSelfTest() {
             || test.Idle(result.data(), &flags, &error) != 0) return static_cast<int>(0x8004E030u);
         ++checks;
         // A protected/invalid generation is never used for metadata re-render.
-        test.currentImageValid = false; test.protectedBlocked = true;
+        test.currentImageValid = false; test.protectedMasked = true;
         test.ApplyColorMetadata(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, true, 3.0f);
         if (test.Idle(result.data(), &flags, &error) != 0 || !(flags & 4) || test.colorDirty) return static_cast<int>(0x8004E031u);
         ++checks;
-        test.protectedBlocked = false;
+        test.protectedMasked = false;
         // Eight-bit RGB remains encoded RGB even on an HDR output; this
         // ambiguous transfer is explicitly named in diagnostics, not tone-mapped.
         image.Reset(); desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;

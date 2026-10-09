@@ -11,6 +11,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-regression-tests
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-combined-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-phase-e-control-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-zone-layout-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-masked-capture-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-masked-desktop-engine-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-capture-encoding-tests.ps1
 ```
 
 The public runner covers fresh public defaults, paused first launch, first-device identity selection, reply timing and output diagnostics. The other runners exercise real engine/filter/detector integration, combined transport boundaries, receiver retirement, release retries and ten/eighteen-zone mapping. They use generated capture, injected time and fake/in-memory transports; these suites do not capture the real desktop or control a strip. Settings fixtures are isolated. Raw evidence is written under review-output or temporary test directories, excluded from Git.
@@ -20,6 +23,8 @@ The standby runner exercises notification parsing and callback lifetime, automat
 The lifecycle runner injects worker/cleanup failures and checks queued/bounded power diagnostics and expected-exit policy. Recovery tests cover bounded direct relaunch, deliberate exit suppression and paused recovery. These do not establish long-duration stability or recovery from a force kill or uncatchable native crash.
 
 Additional focused source tests and runners cover network parsing/authorization, crop boundaries, dark-background weighting, fixture copying and logical zone selection. Native encoding tests use generated D3D11/WARP textures; they require the native build toolchain. SilentStartTests.cs is a separate GUI test and is not part of the public no-device runner.
+
+Masked-desktop regressions check that Windows' already-masked pixels remain usable, static cached images stay active, and a pointer-only mask notice preserves a healthy cache without creating a fresh image. Real errors, invalid generations and encoding changes still need fresh pixels. The engine integration uses the real sampler, crop detector and color processor with injected native results, clock and transport; it checks more than thirty seconds of static capture plus screen-off, lock, sleep, disconnected display, manual pause and shutdown. Native tests render generated colored textures with a black protected rectangle; they do not play or capture protected video.
 
 The application also provides --self-test (generated managed/native checks; local report), --capture-test (actual desktop capture), and --diagnose (capture plus read-only LAN discovery). These are optional diagnostics; normal use needs none of them.
 

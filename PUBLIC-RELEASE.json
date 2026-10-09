@@ -1,21 +1,21 @@
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "status": "one-time experimental release, unmaintained",
   "supportedDevice": "Govee G1 H6609",
   "architecture": "Windows x64 / .NET Framework 4.8 / D3D11",
-  "exeSha256": "c9fff187ac8a8d2bee5a0402e326a5f91f0b85c2267555ced5cd5568b8d5d6bd",
-  "nativeDllSha256": "e117773018d6d331ecde49e1f760da077def58bd28254c043eb10ca30298400b",
-  "nativeSourceSha256": "4968be43700408abb5ac7638569c0a5a131c997a55ea4bc1d3307b053613a5f7",
-  "nativeRebuiltForPublicRelease": false,
+  "exeSha256": "4be9f850d8d27198833f77871356e9b226847cef9a5414fef619cf50fce72c8c",
+  "nativeDllSha256": "b556c6c24214813f52d53b46acce576b846e455d6978020a39163b73e6052c83",
+  "nativeSourceSha256": "527118fb52a00d2ffd6a3a1b7450f7bbf846fc2197968db31445f565735716fd",
+  "nativeRebuiltForPublicRelease": true,
   "managedSourceSha256": {
     "AppFailureRecovery.cs": "443f3b9d632bcd4090beab12f72c94e3ce9a9759574f30ddfce7b25d79fc5be3",
-    "AssemblyInfo.cs": "fce1db9c1a0e4d21d59bebbfcc479a1cb7a9deefafd461f0078daf3dbd680c4a",
-    "Capture.cs": "f6dbf274617166b5dfc1c9357b2cc47cad636161b20b9964121039d840b3e037",
+    "AssemblyInfo.cs": "f636757c4ccebf681200d6c6db9f753b7e6131a9267f79e57e70ebce009817bd",
+    "Capture.cs": "b3c588b307b0259705236321da466bc5b1df167a08e59f48ed0c278e21f4451b",
     "CaptureRecoveryTests.cs": "78b2a265a23364f26127ae6de4a7990bc873c90ddf432927a0d08a5b69b5c0a1",
     "CaptureTests.cs": "8c98de8b015882dca16a9191e1b0e9c624db9d84916f6fb880e37322bbeac8ff",
     "Diagnostics.cs": "e7ab40a112c486766f449a627c679ac57f75c017d89da355e925360504636414",
     "DisplayPowerMonitor.cs": "71473935f5149386f5d32276aeea0aa7a08af9698545e2b5895e2ba8737d7792",
-    "Engine.cs": "23607ea5188b106cf153eb7b9d0ab738aea64e61f86e72433590c81010ebf752",
+    "Engine.cs": "160ffd9d668a08fc6be4a3f86297aadd1428d2f2b6fec91dd73974482953d0c1",
     "Network.cs": "f2e9254722762e083b828efc149a623386827ac5ae36d816e51cb7a42671020f",
     "Program.cs": "a554d9cdf5db38f6512fae1d97a5cc6e6123888e38ca8fff33fb9573e534123e",
     "ProtocolTests.cs": "0a0a52f182f882edb78ca26f0d07899e2e6e9627173b8190f83e5512ac8415f9",
@@ -82,8 +82,28 @@
       "name": "Bounded managed failure recovery",
       "passed": 9,
       "failed": 0
+    },
+    {
+      "name": "Masked capture",
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "name": "Original capture recovery",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "name": "Masked desktop real sampler and engine",
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "name": "Native generated-texture WARP checks",
+      "passed": 26,
+      "failed": 0
     }
   ],
-  "bounds": "150 managed cases/groups passed using injected capture/time/network and isolated child processes. Recovery includes an actual hidden synthetic child with ten-second startup delay, pause inheritance and isolated singleton acquisition; GUI crash paths remain source-reviewed. Owner confirmed physical lock/off/resume and automatic Windows display-off/resume on0.1.1, whose capture, color, network and display-notification code is unchanged. No full system-sleep or long-duration physical acceptance for0.1.2. Native DLL unchanged.",
-  "changes": "Adds durable lifecycle and queued power diagnostics, persisted display/standby state, serialized local logging and bounded same-EXE hidden relaunch after caught managed failures. Three retries, ten-second delay, budget reset after ten minutes; runtime pause preserved; explicit Exit/Windows shutdown suppress recovery. No scheduled-task mechanism or watchdog. Does not recover force termination or uncatchable native faults. Existing sampling, zones, off/wake commands and defaults unchanged from0.1.1."
+  "bounds": "179 managed cases/groups passed using injected native results, clock and network plus isolated recovery processes. Native C++/D3D11 WARP ran 26 top-level checks: ten encoding/cache checks, one aggregate of twenty existing controls, and fifteen masked-image checks. These generated fixtures do not capture protected video or establish physical lighting acceptance. Previous owner-confirmed lock/off/resume and automatic display-off/resume remain historical evidence. No full system-sleep or long-duration physical acceptance for this build.",
+  "changes": "Uses the usable desktop pixels Windows returns when protected content is already blacked out. The mask bit is informational for fresh and healthy cached/reprocessed images; pointer-only mask notices preserve a healthy cache without inventing freshness or repairing invalid generations. Actual capture errors, encoding changes and display-off/lock/suspend still require fresh usable pixels to resume. Real negative HRESULTs remain visible. No alternate capture, protection bypass, extra worker, sampling/FPS change or maintenance service."
 }

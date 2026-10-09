@@ -807,6 +807,7 @@ namespace EdgeGlow
                     }
                     lastCaptureError = "";
                     IEngineCaptureMetadata metadata = capture as IEngineCaptureMetadata;
+                    if (metadata != null && metadata.ProtectedContentMasked) protectedResults++;
                     bool fresh = metadata == null ? capture.HasNewFrame : metadata.HasFreshDesktopFrame;
                     captureUnavailableSince = -1;
                     if (automaticStandby && fresh) {
