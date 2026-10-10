@@ -48,7 +48,7 @@ namespace EdgeGlow
                             else if (sampler.IsReprocessedFrame) reprocessed++;
                             else idle++;
                             active = detector.Update(frame, settings.AreaMode);
-                            ColorProcessor.Sample(frame, active, settings.EdgePercent / 100.0, settings.Brightness / 100.0, settings.Saturation / 100.0, settings.ZoneCount, settings.IgnoreBlackPixels);
+                            ColorProcessor.Sample(frame, active, settings.EdgePercent / 100.0, settings.Brightness / 100.0, settings.Saturation / 100.0, settings.ZoneCount, settings.IgnoreBlackPixels, settings.ColorGammaPercent / 100.0, settings.FavorVividColors);
                         }
                         double ms = work.Elapsed.TotalMilliseconds; totalWork += ms; maxWork = Math.Max(ms, maxWork);
                         if (usable && sampler.HasFreshDesktopFrame && fresh > 3) warmFreshWork.Add(ms);

@@ -13,5 +13,6 @@ if ($buildCode -ne 0) { throw "Dark-background test compile failed: $buildCode" 
 if ($SavedFrame) { & $exe $SavedFrame 2>&1 | Tee-Object -FilePath (Join-Path $OutputDirectory 'results.txt') }
 else { & $exe 2>&1 | Tee-Object -FilePath (Join-Path $OutputDirectory 'results.txt') }
 $testCode = $LASTEXITCODE
-Get-ChildItem -LiteralPath $OutputDirectory -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-File -LiteralPath (Join-Path $OutputDirectory 'hashes.txt')
+$hashes = Get-ChildItem -LiteralPath $OutputDirectory -File | Where-Object { $_.Name -ne 'hashes.txt' } | Get-FileHash -Algorithm SHA256
+$hashes | Format-Table -AutoSize | Out-File -LiteralPath (Join-Path $OutputDirectory 'hashes.txt')
 if ($testCode -ne 0) { throw "Dark-background tests failed: $testCode" }

@@ -16,6 +16,8 @@ namespace EdgeGlow
         public int SmoothMs = 150;
         public int EdgePercent = 20;
         public int Saturation = 125;
+        public int ColorGammaPercent = 100;
+        public bool FavorVividColors = false;
         public int Rotation = 0;
         public int ZoneCount = 18;
         public bool Reverse = false;
@@ -32,6 +34,7 @@ namespace EdgeGlow
             SmoothMs = Math.Max(0, Math.Min(1000, SmoothMs));
             EdgePercent = Math.Max(5, Math.Min(35, EdgePercent));
             Saturation = Math.Max(50, Math.Min(180, Saturation));
+            ColorGammaPercent = Math.Max(100, Math.Min(220, ColorGammaPercent));
             ZoneCount = ZoneCount == 18 ? 18 : 10;
             Rotation = ((Rotation % ZoneCount) + ZoneCount) % ZoneCount;
             if (AreaMode != "Full" && AreaMode != "Cinema16x9") AreaMode = "Auto";

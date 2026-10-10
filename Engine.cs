@@ -828,7 +828,7 @@ namespace EdgeGlow
                     // Healthy cached image evidence advances crop stability even when no desktop present occurs.
                     Rectangle active = detector.Update(frame, config.AreaMode);
                     if (capture.HasNewFrame || desired == null || active != activeArea || !Object.ReferenceEquals(sampledSettings, config)) {
-                        desired = ColorProcessor.Sample(frame, active, config.EdgePercent / 100.0, config.Brightness / 100.0, config.Saturation / 100.0, config.ZoneCount, config.IgnoreBlackPixels);
+                        desired = ColorProcessor.Sample(frame, active, config.EdgePercent / 100.0, config.Brightness / 100.0, config.Saturation / 100.0, config.ZoneCount, config.IgnoreBlackPixels, config.ColorGammaPercent / 100.0, config.FavorVividColors);
                         sampledSettings = config;
                     }
                     activeArea = active; frameWidth = frame.Width; frameHeight = frame.Height;

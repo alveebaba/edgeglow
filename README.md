@@ -4,7 +4,7 @@ Lightweight Windows screen lighting for the **Govee Gaming Light Strip G1 (H6609
 
 **One-time, experimental release. This repository is archived and is not maintained. No support or future updates are promised.** The source is available under the MIT license so others can use and maintain their own forks.
 
-[Download EdgeGlow 0.1.3 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.3/EdgeGlow-v0.1.3-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.3)
+[Download EdgeGlow 0.1.4 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.4/EdgeGlow-v0.1.4-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.4)
 
 ## Quick start
 
@@ -23,6 +23,10 @@ Requires Windows 10/11 x64, .NET Framework 4.8 and a GPU/driver supporting D3D11
 **Auto** follows stable black side bars or letterboxing, then expands for content filling the display. It handles centered 16:9 video on an ultrawide monitor without stretching the picture. **Center 16:9: ignore side bars** forces a centered 16:9 sample area. **Full screen: 21:9 / desktop** samples the whole display, including ordinary 16:9 displays. These labels describe common uses, not a resolution requirement.
 
 Starting settings: **24 updates/second, 150 ms smoothness, 65% brightness, 20% edge depth, 125% color strength, Ignore dark background on**. Tune lighting exposes all these settings. Lower smoothness reacts faster; color strength boosts saturation. Edge depth makes the sampled bands thicker. Dark-background weighting gives bright details more influence; turn it off if white details dominate a scene.
+
+**Color gamma %** calibrates the strip's appearance: **100 is neutral** and preserves previous colors. Try **140** if dark colors look too bright or warm. Higher values deepen midtones and reduce smaller RGB components, so mixed red becomes less pale. This also dims midtone whites; it does not change HDR capture or guarantee a match to a monitor. Gamma runs on the final zone colors before smoothing using a cached 256-entry lookup, with no extra capture or background worker.
+
+**Favor vivid colors** gives saturated pixels more influence in mixed areas, so a firework's pale center is less likely to wash its red edges pink. It starts off. Uniform whites, grays and colors stay unchanged; turning it on does not increase a zone's maximum output channel. It preserves the existing dark-background coverage and fade, and uses the same captured pixels. This is a color preference: pale highlights have less influence when surrounded by stronger colors.
 
 The default layout has **18 zones: six top, three right, six bottom and three left**. Rotation starts at zero because mounting varies. This layout was checked on one H6609. A legacy ten-zone layout is still available by setting ZoneCount to 10 in the local settings file while the app is fully exited; restart afterward. There is no zone-count or device picker in the UI.
 

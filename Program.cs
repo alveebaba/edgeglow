@@ -129,8 +129,8 @@ namespace EdgeGlow
         internal bool CleanupCompleted { get { return engine == null || engine.ShutdownCompleted; } }
         private Label status, detail, metrics, device;
         private ComboBox monitor, area;
-        private NumericUpDown brightness, saturation, smoothing, fps, edge, rotate, zone;
-        private CheckBox reverse, ignoreBlack, startup, autoSync;
+        private NumericUpDown brightness, saturation, colorGamma, smoothing, fps, edge, rotate, zone;
+        private CheckBox reverse, ignoreBlack, vividColors, startup, autoSync;
         private Button toggle;
         private StripPreview visual;
         protected override bool ShowWithoutActivation { get { return preview; } }
@@ -238,13 +238,19 @@ namespace EdgeGlow
             area.SelectedIndex = settings.AreaMode == "Full" ? 1 : settings.AreaMode == "Cinema16x9" ? 2 : 0;
             choices.Controls.Add(monitor, 0, 1); choices.Controls.Add(area, 1, 1); layout.Controls.Add(choices, 0, 6);
 
-            TableLayoutPanel tuning = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 3 };
+            TableLayoutPanel tuning = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 4 };
             for (int c = 0; c < 3; c++) { tuning.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 19)); tuning.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 14.33f)); }
-            for (int r = 0; r < 3; r++) tuning.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            for (int r = 0; r < 4; r++) tuning.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
             brightness = Number(1, 100, settings.Brightness, 5); saturation = Number(50, 180, settings.Saturation, 5); smoothing = Number(0, 1000, settings.SmoothMs, 25);
             fps = Number(10, 40, settings.Fps, 2); edge = Number(5, 35, settings.EdgePercent, 1); rotate = Number(0, settings.ZoneCount - 1, settings.Rotation, 1);
+            colorGamma = Number(100, 220, settings.ColorGammaPercent, 5);
             Field(tuning, "Brightness %", brightness, 0, 0); Field(tuning, "Color strength %", saturation, 2, 0); Field(tuning, "Smoothness ms", smoothing, 4, 0);
             Field(tuning, "Updates / second", fps, 0, 1); Field(tuning, "Edge depth %", edge, 2, 1); Field(tuning, "Rotate zones", rotate, 4, 1);
+            Field(tuning, "Color gamma %", colorGamma, 0, 3);
+            vividColors = new CheckBox { Text = "Favor vivid colors", Checked = settings.FavorVividColors, Dock = DockStyle.Fill };
+            tuning.Controls.Add(vividColors, 2, 3); tuning.SetColumnSpan(vividColors, 2);
+            Label gammaHelp = LabelText("Gamma 100 = neutral", 9, muted);
+            tuning.Controls.Add(gammaHelp, 4, 3); tuning.SetColumnSpan(gammaHelp, 2);
             reverse = new CheckBox { Text = "Reverse strip", Checked = settings.Reverse, Dock = DockStyle.Fill };
             ignoreBlack = new CheckBox { Text = "Ignore dark background", Checked = settings.IgnoreBlackPixels, Dock = DockStyle.Fill };
             tuning.Controls.Add(reverse, 0, 2); tuning.SetColumnSpan(reverse, 2); tuning.Controls.Add(ignoreBlack, 2, 2); tuning.SetColumnSpan(ignoreBlack, 2);
@@ -265,8 +271,8 @@ namespace EdgeGlow
             tuningButton.Click += delegate
             {
                 bool expanded = !tuning.Visible; tuning.Visible = expanded; apply.Visible = expanded; test.Visible = expanded; zone.Visible = expanded;
-                layout.RowStyles[7].Height = expanded ? 117 : 0;
-                Height += expanded ? 117 : -117;
+                layout.RowStyles[7].Height = expanded ? 156 : 0;
+                Height += expanded ? 156 : -156;
                 tuningButton.Text = expanded ? "Hide tuning" : "Tune lighting";
             };
             actions.Controls.Add(toggle); actions.Controls.Add(tuningButton); actions.Controls.Add(apply);
@@ -291,6 +297,8 @@ namespace EdgeGlow
             updated.Monitor = ((MonitorChoice)monitor.SelectedItem).DeviceName;
             updated.AreaMode = area.SelectedIndex == 1 ? "Full" : area.SelectedIndex == 2 ? "Cinema16x9" : "Auto";
             updated.Brightness = (int)brightness.Value; updated.Saturation = (int)saturation.Value; updated.SmoothMs = (int)smoothing.Value;
+            updated.ColorGammaPercent = (int)colorGamma.Value;
+            updated.FavorVividColors = vividColors.Checked;
             updated.Fps = (int)fps.Value; updated.EdgePercent = (int)edge.Value; updated.Rotation = (int)rotate.Value;
             updated.Reverse = reverse.Checked; updated.IgnoreBlackPixels = ignoreBlack.Checked; updated.StartWithWindows = startup.Checked; updated.AutoSync = autoSync.Checked;
             try { Storage.SetStartup(updated.StartWithWindows); Storage.Save(updated); settings = updated; if (engine != null) engine.Update(updated); }
@@ -341,7 +349,7 @@ namespace EdgeGlow
                 try
                 {
                     Directory.CreateDirectory(Storage.DirectoryPath);
-                    string json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { updatedUtc = DateTime.UtcNow.ToString("o"), status = s.Message, detail = s.Detail, sending = s.Sending, zoneCount = settings.ZoneCount, edgeDepthPercent = settings.EdgePercent, ignoreDarkBackground = settings.IgnoreBlackPixels, deviceIp = s.Ip, lastReplyUtc = s.LastReply.ToString("o"), freshFrames = s.FreshFrames, loopIterations = s.LoopIterations, captureAttempts = s.CaptureAttempts, idleResults = s.IdleResults, captureErrors = s.CaptureErrors, missingFrames = s.MissingFrames, protectedResults = s.ProtectedResults, reprocessedFrames = s.ReprocessedFrames, datagrams = s.Datagrams, allBlackColorDatagrams = s.AllBlackColorDatagrams, nearBlackColorDatagrams = s.NearBlackColorDatagrams, nearBlackMaximumChannel = 3, lastColorPeak = s.LastColorPeak, lastColorWasTest = s.LastColorWasTest, lastColorSendUtc = s.LastColorSendUtc.ToString("o"), lastNearBlackSendUtc = s.LastNearBlackSendUtc.ToString("o"), lastAllBlackSendUtc = s.LastAllBlackSendUtc.ToString("o"), lastNearBlackWasTest = s.LastNearBlackWasTest, lastAllBlackWasTest = s.LastAllBlackWasTest, maximumColorSendGapUtc = s.MaximumColorSendGapUtc.ToString("o"), maximumColorSendGapWasTest = s.MaximumColorSendGapWasTest, lastColorSendGapSeconds = s.LastColorSendGapSeconds, maximumColorSendGapSeconds = s.MaximumColorSendGapSeconds, activationAttemptsTotal = s.ActivationAttemptsTotal, lastActivationAttemptUtc = s.LastActivationAttemptUtc.ToString("o"), lastActivationSucceededUtc = s.LastActivationSucceededUtc.ToString("o"), lastActivationReason = s.LastActivationReason, processedPowerOffObservations = s.PowerOffReports, lastPowerOffReportUtc = s.LastPowerOffReportUtc.ToString("o"), outputDiagnosticEvents = s.OutputDiagnosticEvents, outputDiagnosticEventLimit = 64, outputDiagnosticsScope = "Successful local color sends only; no physical acknowledgement. Current-stream gaps exclude new activation and test/ambient crossings. Off observations can recount cached fresh status after resume/reset. RAM event history is bounded; legitimate dark content is included.", outputPolicy = s.OutputPolicy, lastUsableImageUtc = s.LastUsableImageUtc.ToString("o"), imageAgeSeconds = s.ImageAgeSeconds, sessionGeneration = s.SessionGeneration, displayPowerState = s.DisplayPowerState, automaticStandby = s.AutomaticStandby, standbyReason = s.StandbyReason, standbyAttempts = s.StandbyAttempts, releasePending = s.ReleasePending, settingsWarning = Storage.LoadWarning, workMs = s.WorkMs, frameWidth = s.FrameWidth, frameHeight = s.FrameHeight, activeX = s.ActiveArea.X, activeY = s.ActiveArea.Y, activeWidth = s.ActiveArea.Width, activeHeight = s.ActiveArea.Height, workingSetBytes = Environment.WorkingSet });
+                    string json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { updatedUtc = DateTime.UtcNow.ToString("o"), status = s.Message, detail = s.Detail, sending = s.Sending, zoneCount = settings.ZoneCount, edgeDepthPercent = settings.EdgePercent, ignoreDarkBackground = settings.IgnoreBlackPixels, colorGammaPercent = settings.ColorGammaPercent, favorVividColors = settings.FavorVividColors, deviceIp = s.Ip, lastReplyUtc = s.LastReply.ToString("o"), freshFrames = s.FreshFrames, loopIterations = s.LoopIterations, captureAttempts = s.CaptureAttempts, idleResults = s.IdleResults, captureErrors = s.CaptureErrors, missingFrames = s.MissingFrames, protectedResults = s.ProtectedResults, reprocessedFrames = s.ReprocessedFrames, datagrams = s.Datagrams, allBlackColorDatagrams = s.AllBlackColorDatagrams, nearBlackColorDatagrams = s.NearBlackColorDatagrams, nearBlackMaximumChannel = 3, lastColorPeak = s.LastColorPeak, lastColorWasTest = s.LastColorWasTest, lastColorSendUtc = s.LastColorSendUtc.ToString("o"), lastNearBlackSendUtc = s.LastNearBlackSendUtc.ToString("o"), lastAllBlackSendUtc = s.LastAllBlackSendUtc.ToString("o"), lastNearBlackWasTest = s.LastNearBlackWasTest, lastAllBlackWasTest = s.LastAllBlackWasTest, maximumColorSendGapUtc = s.MaximumColorSendGapUtc.ToString("o"), maximumColorSendGapWasTest = s.MaximumColorSendGapWasTest, lastColorSendGapSeconds = s.LastColorSendGapSeconds, maximumColorSendGapSeconds = s.MaximumColorSendGapSeconds, activationAttemptsTotal = s.ActivationAttemptsTotal, lastActivationAttemptUtc = s.LastActivationAttemptUtc.ToString("o"), lastActivationSucceededUtc = s.LastActivationSucceededUtc.ToString("o"), lastActivationReason = s.LastActivationReason, processedPowerOffObservations = s.PowerOffReports, lastPowerOffReportUtc = s.LastPowerOffReportUtc.ToString("o"), outputDiagnosticEvents = s.OutputDiagnosticEvents, outputDiagnosticEventLimit = 64, outputDiagnosticsScope = "Successful local color sends only; no physical acknowledgement. Current-stream gaps exclude new activation and test/ambient crossings. Off observations can recount cached fresh status after resume/reset. RAM event history is bounded; legitimate dark content is included.", outputPolicy = s.OutputPolicy, lastUsableImageUtc = s.LastUsableImageUtc.ToString("o"), imageAgeSeconds = s.ImageAgeSeconds, sessionGeneration = s.SessionGeneration, displayPowerState = s.DisplayPowerState, automaticStandby = s.AutomaticStandby, standbyReason = s.StandbyReason, standbyAttempts = s.StandbyAttempts, releasePending = s.ReleasePending, settingsWarning = Storage.LoadWarning, workMs = s.WorkMs, frameWidth = s.FrameWidth, frameHeight = s.FrameHeight, activeX = s.ActiveArea.X, activeY = s.ActiveArea.Y, activeWidth = s.ActiveArea.Width, activeHeight = s.ActiveArea.Height, workingSetBytes = Environment.WorkingSet });
                     File.WriteAllText(Path.Combine(Storage.DirectoryPath, "status.json"), json);
                 }
                 catch { }

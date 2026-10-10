@@ -14,6 +14,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-zone-layout-test
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-masked-capture-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-masked-desktop-engine-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-capture-encoding-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-output-gamma-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-vivid-color-tests.ps1
 ```
 
 The public runner covers fresh public defaults, paused first launch, first-device identity selection, reply timing and output diagnostics. The other runners exercise real engine/filter/detector integration, combined transport boundaries, receiver retirement, release retries and ten/eighteen-zone mapping. They use generated capture, injected time and fake/in-memory transports; these suites do not capture the real desktop or control a strip. Settings fixtures are isolated. Raw evidence is written under review-output or temporary test directories, excluded from Git.
@@ -29,3 +31,7 @@ Masked-desktop regressions check that Windows' already-masked pixels remain usab
 The application also provides --self-test (generated managed/native checks; local report), --capture-test (actual desktop capture), and --diagnose (capture plus read-only LAN discovery). These are optional diagnostics; normal use needs none of them.
 
 Passing deterministic tests is not a physical acceptance result. Mounting, colors, firmware, HDR/game capture, cursor behavior and long-duration stability must be checked on the recipient's PC and strip. No CI or scheduled maintenance is configured.
+
+Output-gamma tests check neutral compatibility, encoded-channel curves and endpoints, concurrent lookup publication, isolated settings migration/serialization, and gamma before engine smoothing and physical zone mapping. The curve calibrates LED appearance; these tests do not establish a particular strip's transfer function or a match to a real display.
+
+Vivid-color tests check optional color preference in mixed areas, unchanged legacy output when off, preserved uniform colors and dark-content coverage, the maximum-channel ceiling, settings compatibility, and the order of preference, gamma, smoothing and zone mapping. They use generated pixels and fake transport; they do not validate physical color matching.

@@ -376,6 +376,39 @@ namespace EdgeGlow
 
     public static class ColorProcessor
     {
+        private sealed class GammaCurve
+        {
+            internal readonly double Gamma;
+            internal readonly byte[] Channels = new byte[256];
+            internal GammaCurve(double gamma) {
+                Gamma = gamma;
+                for (int i = 0; i < Channels.Length; i++)
+                    Channels[i] = (byte)Channel(255 * Math.Pow(i / 255.0, gamma));
+            }
+        }
+        private static volatile GammaCurve gammaCurve;
+
+        // LED calibration is applied to the existing encoded zone colors,
+        // before temporal smoothing. A neutral curve preserves legacy bytes.
+        // The immutable lookup is rebuilt only when the requested curve changes.
+        public static Color[] Sample(CaptureFrame frame, Rectangle active, double edgeDepth, double brightness, double saturation, int zoneCount, bool ignoreBlackPixels, double gamma)
+        {
+            return Sample(frame, active, edgeDepth, brightness, saturation, zoneCount, ignoreBlackPixels, gamma, false);
+        }
+
+        public static Color[] Sample(CaptureFrame frame, Rectangle active, double edgeDepth, double brightness, double saturation, int zoneCount, bool ignoreBlackPixels, double gamma, bool favorVividColors)
+        {
+            Color[] colors = SampleAreas(frame, active, edgeDepth, brightness, saturation, zoneCount, ignoreBlackPixels, favorVividColors);
+            if (Double.IsNaN(gamma) || Double.IsInfinity(gamma)) gamma = 1;
+            gamma = Clamp(gamma, 1, 2.2);
+            if (gamma == 1) return colors;
+            GammaCurve curve = gammaCurve;
+            if (curve == null || curve.Gamma != gamma) { curve = new GammaCurve(gamma); gammaCurve = curve; }
+            for (int i = 0; i < colors.Length; i++)
+                colors[i] = Color.FromArgb(curve.Channels[colors[i].R], curve.Channels[colors[i].G], curve.Channels[colors[i].B]);
+            return colors;
+        }
+
         // Clockwise viewed from the front: top L->R x4, right middle,
         // bottom R->L x4, left middle. Side zones read the middle 60%.
         public static Color[] Sample(CaptureFrame frame, Rectangle active, double edgeDepth, double brightness, double saturation)
@@ -389,6 +422,11 @@ namespace EdgeGlow
         }
 
         public static Color[] Sample(CaptureFrame frame, Rectangle active, double edgeDepth, double brightness, double saturation, int zoneCount, bool ignoreBlackPixels)
+        {
+            return SampleAreas(frame, active, edgeDepth, brightness, saturation, zoneCount, ignoreBlackPixels, false);
+        }
+
+        private static Color[] SampleAreas(CaptureFrame frame, Rectangle active, double edgeDepth, double brightness, double saturation, int zoneCount, bool ignoreBlackPixels, bool favorVividColors)
         {
             if (zoneCount != 10 && zoneCount != 18) throw new ArgumentException("Expected 10 or 18 zones.", "zoneCount");
             if (frame == null) throw new ArgumentNullException("frame");
@@ -407,14 +445,14 @@ namespace EdgeGlow
                 for (int part = 0; part < 6; part++) {
                     int left = active.Left + active.Width * part / 6;
                     int right = active.Left + active.Width * (part + 1) / 6;
-                    expanded[part] = Average(frame, new Rectangle(left, active.Top, right - left, depthY), brightness, saturation, ignoreBlackPixels);
-                    expanded[14 - part] = Average(frame, new Rectangle(left, active.Bottom - depthY, right - left, depthY), brightness, saturation, ignoreBlackPixels);
+                    expanded[part] = Average(frame, new Rectangle(left, active.Top, right - left, depthY), brightness, saturation, ignoreBlackPixels, favorVividColors);
+                    expanded[14 - part] = Average(frame, new Rectangle(left, active.Bottom - depthY, right - left, depthY), brightness, saturation, ignoreBlackPixels, favorVividColors);
                 }
                 for (int part = 0; part < 3; part++) {
                     int top = active.Top + active.Height * part / 3;
                     int bottom = active.Top + active.Height * (part + 1) / 3;
-                    expanded[6 + part] = Average(frame, new Rectangle(active.Right - depthX, top, depthX, bottom - top), brightness, saturation, ignoreBlackPixels);
-                    expanded[17 - part] = Average(frame, new Rectangle(active.Left, top, depthX, bottom - top), brightness, saturation, ignoreBlackPixels);
+                    expanded[6 + part] = Average(frame, new Rectangle(active.Right - depthX, top, depthX, bottom - top), brightness, saturation, ignoreBlackPixels, favorVividColors);
+                    expanded[17 - part] = Average(frame, new Rectangle(active.Left, top, depthX, bottom - top), brightness, saturation, ignoreBlackPixels, favorVividColors);
                 }
                 return expanded;
             }
@@ -423,30 +461,33 @@ namespace EdgeGlow
             {
                 int left = active.Left + active.Width * part / 4;
                 int right = active.Left + active.Width * (part + 1) / 4;
-                colors[part] = Average(frame, new Rectangle(left, active.Top, right - left, depthY), brightness, saturation, ignoreBlackPixels);
-                colors[8 - part] = Average(frame, new Rectangle(left, active.Bottom - depthY, right - left, depthY), brightness, saturation, ignoreBlackPixels);
+                colors[part] = Average(frame, new Rectangle(left, active.Top, right - left, depthY), brightness, saturation, ignoreBlackPixels, favorVividColors);
+                colors[8 - part] = Average(frame, new Rectangle(left, active.Bottom - depthY, right - left, depthY), brightness, saturation, ignoreBlackPixels, favorVividColors);
             }
             int sideTop = active.Top + active.Height / 5;
             int sideBottom = active.Bottom - active.Height / 5;
-            colors[4] = Average(frame, new Rectangle(active.Right - depthX, sideTop, depthX, sideBottom - sideTop), brightness, saturation, ignoreBlackPixels);
-            colors[9] = Average(frame, new Rectangle(active.Left, sideTop, depthX, sideBottom - sideTop), brightness, saturation, ignoreBlackPixels);
+            colors[4] = Average(frame, new Rectangle(active.Right - depthX, sideTop, depthX, sideBottom - sideTop), brightness, saturation, ignoreBlackPixels, favorVividColors);
+            colors[9] = Average(frame, new Rectangle(active.Left, sideTop, depthX, sideBottom - sideTop), brightness, saturation, ignoreBlackPixels, favorVividColors);
             return colors;
         }
 
-        private static Color Average(CaptureFrame frame, Rectangle region, double brightness, double saturation, bool ignoreBlackPixels = false)
+        private static Color Average(CaptureFrame frame, Rectangle region, double brightness, double saturation, bool ignoreBlackPixels, bool favorVividColors)
         {
             double red = 0, green = 0, blue = 0, support = 0;
+            double vividRed = 0, vividGreen = 0, vividBlue = 0, vividSupport = 0;
+            int firstRgb = -1; bool varied = false;
             long count = 0;
             for (int y = region.Top; y < region.Bottom; y++)
                 for (int x = region.Left; x < region.Right; x++)
                 {
                     int i = (y * frame.Width + x) * 4;
                     byte b = frame.Bgra[i], g = frame.Bgra[i + 1], r = frame.Bgra[i + 2];
+                    double weight = 1;
                     if (ignoreBlackPixels)
                     {
                         // Give white and colors the same support; only near-black
                         // intensity is suppressed, with a smooth transition.
-                        double weight = Clamp((Math.Max(r, Math.Max(g, b)) - 8) / 16.0, 0, 1);
+                        weight = Clamp((Math.Max(r, Math.Max(g, b)) - 8) / 16.0, 0, 1);
                         weight = weight * weight * (3 - 2 * weight);
                         red += r * weight; green += g * weight; blue += b * weight;
                         support += weight;
@@ -454,6 +495,17 @@ namespace EdgeGlow
                     else
                     {
                         red += r; green += g; blue += b;
+                    }
+                    if (favorVividColors) {
+                        int rgb = (r << 16) | (g << 8) | b;
+                        if (firstRgb < 0) firstRgb = rgb;
+                        else if (rgb != firstRgb) varied = true;
+                        int peak = Math.Max(r, Math.Max(g, b));
+                        int low = Math.Min(r, Math.Min(g, b));
+                        double chroma = peak == 0 ? 0 : (peak - low) / (double)peak;
+                        double vividWeight = weight * (0.05 + 0.95 * chroma * chroma);
+                        vividRed += r * vividWeight; vividGreen += g * vividWeight; vividBlue += b * vividWeight;
+                        vividSupport += vividWeight;
                     }
                     count++;
                 }
@@ -472,6 +524,25 @@ namespace EdgeGlow
                 // Preserve the default arithmetic mean of encoded RGB exactly.
                 red /= count; green /= count; blue /= count;
             }
+            Color normal = AdjustColor(red, green, blue, brightness, saturation);
+            if (!favorVividColors || !varied || vividSupport <= 0) return normal;
+            double vividPeak = Math.Max(vividRed, Math.Max(vividGreen, vividBlue));
+            if (vividPeak <= 0) return normal;
+            // Keep ordinary area brightness and sparse-content fade; only the
+            // relative color influence changes. White-only areas remain white.
+            double scale = Math.Max(red, Math.Max(green, blue)) / vividPeak;
+            Color vivid = AdjustColor(vividRed * scale, vividGreen * scale, vividBlue * scale, brightness, saturation);
+            int normalPeak = Math.Max(normal.R, Math.Max(normal.G, normal.B));
+            int finalPeak = Math.Max(vivid.R, Math.Max(vivid.G, vivid.B));
+            if (finalPeak > normalPeak) {
+                double limit = normalPeak / (double)finalPeak;
+                vivid = Color.FromArgb(Channel(vivid.R * limit), Channel(vivid.G * limit), Channel(vivid.B * limit));
+            }
+            return vivid;
+        }
+
+        private static Color AdjustColor(double red, double green, double blue, double brightness, double saturation)
+        {
             // Brightness and saturation always follow extraction.
             double light = red * 0.2126 + green * 0.7152 + blue * 0.0722;
             return Color.FromArgb(Channel((light + (red - light) * saturation) * brightness),
