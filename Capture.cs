@@ -528,10 +528,19 @@ namespace EdgeGlow
             if (!favorVividColors || !varied || vividSupport <= 0) return normal;
             double vividPeak = Math.Max(vividRed, Math.Max(vividGreen, vividBlue));
             if (vividPeak <= 0) return normal;
-            // Keep ordinary area brightness and sparse-content fade; only the
-            // relative color influence changes. White-only areas remain white.
-            double scale = Math.Max(red, Math.Max(green, blue)) / vividPeak;
-            Color vivid = AdjustColor(vividRed * scale, vividGreen * scale, vividBlue * scale, brightness, saturation);
+            double areaPeak = Math.Max(red, Math.Max(green, blue));
+            double areaLow = Math.Min(red, Math.Min(green, blue));
+            double areaChroma = areaPeak - areaLow;
+            if (areaPeak <= 0 || areaChroma <= 0) return normal;
+            // Use vivid pixels only to estimate saturation, never to choose a
+            // different hue. Keep the original area mean and dark-content fade.
+            // A small colored patch can deepen its ordinary contribution by at
+            // most 50 percent; it cannot take over another area's color.
+            double vividLow = Math.Min(vividRed, Math.Min(vividGreen, vividBlue));
+            double desiredChroma = (vividPeak - vividLow) / vividPeak * areaPeak;
+            double boost = Math.Min(areaPeak / areaChroma, Clamp(desiredChroma / areaChroma, 1, 1.5));
+            Color vivid = AdjustColor(areaPeak - (areaPeak - red) * boost,
+                areaPeak - (areaPeak - green) * boost, areaPeak - (areaPeak - blue) * boost, brightness, saturation);
             int normalPeak = Math.Max(normal.R, Math.Max(normal.G, normal.B));
             int finalPeak = Math.Max(vivid.R, Math.Max(vivid.G, vivid.B));
             if (finalPeak > normalPeak) {

@@ -4,7 +4,9 @@ Lightweight Windows screen lighting for the **Govee Gaming Light Strip G1 (H6609
 
 **One-time, experimental release. This repository is archived and is not maintained. No support or future updates are promised.** The source is available under the MIT license so others can use and maintain their own forks.
 
-[Download EdgeGlow 0.1.4 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.4/EdgeGlow-v0.1.4-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.4)
+[Download EdgeGlow 0.1.6 for Windows x64](https://github.com/alveebaba/edgeglow/releases/download/v0.1.6/EdgeGlow-v0.1.6-windows-x64.zip) · [Release notes](https://github.com/alveebaba/edgeglow/releases/tag/v0.1.6)
+
+**Experimental prerelease.** Version 0.1.6 compiled and passed isolated Windows component tests. Its actual sleep/wake behavior, possible wake flashes, color balance and long-duration operation still require physical checks. It is not approved for unattended reliability.
 
 ## Quick start
 
@@ -24,15 +26,17 @@ Requires Windows 10/11 x64, .NET Framework 4.8 and a GPU/driver supporting D3D11
 
 Starting settings: **24 updates/second, 150 ms smoothness, 65% brightness, 20% edge depth, 125% color strength, Ignore dark background on**. Tune lighting exposes all these settings. Lower smoothness reacts faster; color strength boosts saturation. Edge depth makes the sampled bands thicker. Dark-background weighting gives bright details more influence; turn it off if white details dominate a scene.
 
-**Color gamma %** calibrates the strip's appearance: **100 is neutral** and preserves previous colors. Try **140** if dark colors look too bright or warm. Higher values deepen midtones and reduce smaller RGB components, so mixed red becomes less pale. This also dims midtone whites; it does not change HDR capture or guarantee a match to a monitor. Gamma runs on the final zone colors before smoothing using a cached 256-entry lookup, with no extra capture or background worker.
+**Color gamma %** calibrates the strip's appearance: **100 is neutral**. Higher values darken midtones and reduce smaller RGB components; they can also change channel ratios and dim whites. Keep 100 as the starting point. This does not change HDR capture or guarantee a match to a monitor. Gamma runs on the final zone colors before smoothing using a cached 256-entry lookup, with no extra capture or background worker.
 
-**Favor vivid colors** gives saturated pixels more influence in mixed areas, so a firework's pale center is less likely to wash its red edges pink. It starts off. Uniform whites, grays and colors stay unchanged; turning it on does not increase a zone's maximum output channel. It preserves the existing dark-background coverage and fade, and uses the same captured pixels. This is a color preference: pale highlights have less influence when surrounded by stronger colors.
+**Favor vivid colors** starts off. Vivid pixels suggest a saturation increase, capped at 50% above the sampled area's original chroma, while preserving its extracted hue. Uniform colors and the extraction's maximum channel are preserved. This does not prevent **Ignore dark background** from amplifying sparse bright details: its fade reaches full conditional-mean brightness at 5% zone coverage. Turn Ignore dark background off to compare ordinary area averaging; dark scenes may become dimmer. Color strength, clipping, output gamma and the strip's response can still alter the final appearance. No hue, including red, receives special priority. Optical color balance remains unverified.
 
 The default layout has **18 zones: six top, three right, six bottom and three left**. Rotation starts at zero because mounting varies. This layout was checked on one H6609. A legacy ten-zone layout is still available by setting ZoneCount to 10 in the local settings file while the app is fully exited; restart afterward. There is no zone-count or device picker in the UI.
 
 ## Automatic screen standby
 
-While syncing, EdgeGlow requests lights off when Windows reports the session display off, the PC locks or sleeps, or the selected display disconnects. Capture stops during these states. Lighting resumes automatically after the display/session is available and capture provides a fresh usable image. A manual **Pause** stays paused after wake.
+While syncing, EdgeGlow requests lights off when Windows reports the session display off, the PC locks or sleeps, or the selected display disconnects. Capture stops during these states. Once the blockers clear and a fresh usable image arrives, it attempts to resume lighting. A manual **Pause** stays paused after wake.
+
+After its own standby, version 0.1.6 makes up to three wake-only power-on and stream-enable attempts, at least one second apart, within a six-second episode. This improves recovery from silently lost UDP commands without periodic resets during healthy playback. All attempts can still be lost; command ordering, flashes and actual sleep/wake recovery require checking on your strip. No additional worker, watchdog or startup entry is added.
 
 Ten continuous seconds without a usable capture also requests lights off, then waits for a fresh image. Brief capture interruptions hold the last colors. A healthy still picture remains active; lack of new animation is not a sleep signal. Black pictures remain ordinary content and naturally produce dark light colors.
 

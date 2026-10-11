@@ -12,7 +12,7 @@ namespace EdgeGlow
         private static int passed, failed, assertions;
         public static int Main(string[] args)
         {
-            Run("Display off stops capture, on waits for fresh frame and wakes once", DisplayOffOn);
+            Run("Display off stops capture, on waits for fresh frame and performs one bounded episode", DisplayOffOn);
             Run("Dim, duplicate and invalid display notifications are quiet", DimAndDuplicates);
             Run("A healthy static cached desktop stays active for ten minutes", StaticCachedDesktop);
             Run("Short capture errors hold colors and reset the no-image timer", ShortFailure);
@@ -72,7 +72,11 @@ namespace EdgeGlow
                 Check(!f.Engine.State.AutomaticStandby && f.Transport.Colors.Count == colors + 1, "wake failed to clear standby or send colors");
                 Check(f.Transport.Colors[f.Transport.Colors.Count - 1].Length == 18, "wake changed the zone count");
                 f.Step(1.1);
-                Check(f.Transport.SuccessfulWakes == 1 && f.Transport.EnableEntries == 1, "healthy wake repeated activation");
+                Check(f.Transport.SuccessfulWakes == 2 && f.Transport.EnableEntries == 1, "second wake-only replay was missing or used ordinary activation");
+                f.Step(1.1);
+                Check(f.Transport.SuccessfulWakes == 3 && f.Transport.EnableEntries == 1, "third wake-only replay was missing");
+                f.Step(1.1); f.Step(30);
+                Check(f.Transport.SuccessfulWakes == 3 && f.Transport.EnableEntries == 1, "healthy playback restarted mode after the finite episode");
             }
         }
         private static void DimAndDuplicates()
@@ -168,8 +172,9 @@ namespace EdgeGlow
                 f.Transport.BeforeWakeOnce = delegate { f.Clock.Advance(.02); };
                 f.Capture.Present(Color.Red); f.Step(.05);
                 Check(f.Transport.WakeEntries == 1 && f.Transport.FailedWakes == 1 &&
-                    f.Transport.SuccessfulWakes == 0 && f.Engine.State.AutomaticStandby,
-                    "fixture did not retain standby after one failed authorized wake");
+                    f.Transport.SuccessfulWakes == 0 && !f.Engine.State.AutomaticStandby &&
+                    f.Engine.State.WakeRecoveryAttempts == 1 && f.Engine.State.WakeRecoveryPhase == "replaying",
+                    "failed wake did not retain separate recovery authority outside standby");
                 Check(f.Transport.Colors.Count == 1 && !f.Engine.State.Sending, "failed wake streamed colors");
                 f.Step(.5);
                 Check(f.Transport.WakeEntries == 1 && !f.Engine.State.Sending, "wake ignored its retry cooldown");

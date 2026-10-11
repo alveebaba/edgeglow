@@ -44,7 +44,7 @@ namespace EdgeGlow
         private static void WakePair(Fixture f, string ip)
         {
             Check(f.Commands.Count == 2, "Wake sends exactly two commands.");
-            Command(f, 0, GoveeLan.EnablePacket, ip); Command(f, 1, "\"value\":1", ip);
+            Command(f, 0, "\"value\":1", ip); Command(f, 1, GoveeLan.EnablePacket, ip);
         }
         private static void FinalRelease(Fixture f, bool? original, string ip)
         {
@@ -81,9 +81,12 @@ namespace EdgeGlow
                 // A fresh off observation cannot replace an originally-on or
                 // unknown baseline with the temporary standby state.
                 f.Lan.Wake(f.Token, Allowed); WakePair(f, Fixture.Ip);
-                Check(!f.Lan.HasStandby("Alpha"), "Completed wake clears the lookup.");
-                f.Clear(); Invalid(delegate { f.Lan.Wake(f.Token, Allowed); }, "Completed wake consumes its separate intent.");
-                Check(f.Commands.Count == 0, "No duplicate wake commands.");
+                Check(f.Lan.HasStandby("Alpha"), "Local success retains the own-off receipt for the bounded engine episode.");
+                f.Clear(); f.Lan.Wake(f.Token, Allowed); WakePair(f, Fixture.Ip);
+                f.Lan.CancelStandby();
+                Check(!f.Lan.HasStandby("Alpha"), "Explicit episode completion clears the lookup.");
+                f.Clear(); Invalid(delegate { f.Lan.Wake(f.Token, Allowed); }, "Episode completion consumes its separate intent.");
+                Check(f.Commands.Count == 0, "No wake is possible after episode completion.");
                 FinalRelease(f, original, Fixture.Ip);
             }
         }
@@ -160,7 +163,7 @@ namespace EdgeGlow
                 f.Open(false); f.Lan.Standby(f.Token, Allowed); f.Clear(); int calls = 0; int boundary = reject;
                 Canceled(delegate { f.Lan.Wake(f.Token, delegate { return ++calls != boundary; }); }, "Wake checks authorization at each boundary.");
                 Check(calls == reject && f.Commands.Count == reject - 1, "Canceled wake sends no later command.");
-                if (reject == 2) Command(f, 0, GoveeLan.EnablePacket, Fixture.Ip);
+                if (reject == 2) Command(f, 0, "\"value\":1", Fixture.Ip);
                 f.Clear(); f.Lan.Wake(f.Token, Allowed); WakePair(f, Fixture.Ip);
                 FinalRelease(f, false, Fixture.Ip);
             }
@@ -213,9 +216,11 @@ namespace EdgeGlow
                 f.Open(false); f.Lan.Standby(f.Token, Allowed); f.Clear(); f.Factory.FailAttempt = fail;
                 Failed(delegate { f.Lan.Wake(f.Token, Allowed); }, "Wake socket failure surfaces.");
                 Check(f.Commands.Count == fail - 1, "Failed wake stops its remaining commands.");
-                Check(f.Lan.HasStandby("Alpha"), "Partial wake retains intent until every local send succeeds.");
+                Check(f.Lan.HasStandby("Alpha"), "Partial wake retains the receipt until engine cancellation or completion.");
                 f.Recover("Alpha", Fixture.Ip); f.Clear(); f.Lan.Wake(f.Token, Allowed); WakePair(f, Fixture.Ip);
-                f.Clear(); Invalid(delegate { f.Lan.Wake(f.Token, Allowed); }, "Only a completed wake consumes its record.");
+                Check(f.Lan.HasStandby("Alpha"), "A successful retry still does not prove device delivery.");
+                f.Lan.CancelStandby();
+                f.Clear(); Invalid(delegate { f.Lan.Wake(f.Token, Allowed); }, "Only explicit episode completion consumes its record.");
                 FinalRelease(f, false, Fixture.Ip);
             }
         }
@@ -278,9 +283,9 @@ namespace EdgeGlow
                 EndpointToken old = f.Token; f.Clear();
                 f.Factory.AfterSend = delegate { f.Factory.AfterSend = null; f.Select("Beta", Fixture.Ip); };
                 if (operation == 0) Invalid(delegate { f.Lan.Standby(old, Allowed); }, "Identity is revalidated between off and stream-disable.");
-                else Invalid(delegate { f.Lan.Wake(old, Allowed); }, "Identity is revalidated between stream-enable and on.");
+                else Invalid(delegate { f.Lan.Wake(old, Allowed); }, "Identity is revalidated between on and stream-enable.");
                 Check(f.Commands.Count == 1, "A conflicting scan prevents the second command.");
-                Command(f, 0, operation == 0 ? "\"value\":0" : GoveeLan.EnablePacket, Fixture.Ip);
+                Command(f, 0, operation == 0 ? "\"value\":0" : "\"value\":1", Fixture.Ip);
                 f.Select("Alpha", Fixture.Ip); f.Clear(); f.Lan.Wake(f.Token, Allowed); WakePair(f, Fixture.Ip);
             }
         }
@@ -317,8 +322,8 @@ namespace EdgeGlow
                 Check(f.Commands.Count == 1, "Only off preceded cancellation.");
                 f.Clear(); f.Lan.Standby(f.Token, Allowed); f.Clear();
                 f.Factory.AfterSend = delegate { f.Factory.AfterSend = null; f.Lan.CancelStandby(); };
-                Canceled(delegate { f.Lan.Wake(f.Token, Allowed); }, "Cancellation between wake commands stops turn-on.");
-                Check(f.Commands.Count == 1 && f.Commands[0].Contains(GoveeLan.EnablePacket), "Canceled wake sends no power-on.");
+                Canceled(delegate { f.Lan.Wake(f.Token, Allowed); }, "Cancellation between wake commands stops stream-enable.");
+                Check(f.Commands.Count == 1 && f.Commands[0].Contains("\"value\":1"), "Canceled wake sends no later stream-enable.");
                 FinalRelease(f, false, Fixture.Ip);
             }
             using (Fixture f = new Fixture())
@@ -336,8 +341,8 @@ namespace EdgeGlow
                 f.Open(true); f.Lan.Standby(f.Token, Allowed); f.Clear();
                 f.Factory.AfterSend = delegate { f.Factory.AfterSend = null; f.Lan.Standby(f.Token, Allowed); };
                 Canceled(delegate { f.Lan.Wake(f.Token, Allowed); }, "A newer standby invalidates the old wake transaction.");
-                Check(f.Commands.Count == 3, "New standby follows mode-enable without a late old power-on.");
-                Command(f, 0, GoveeLan.EnablePacket, Fixture.Ip); Command(f, 1, "\"value\":0", Fixture.Ip); Command(f, 2, GoveeLan.DisablePacket, Fixture.Ip);
+                Check(f.Commands.Count == 3, "New standby follows power-on without a late old stream-enable.");
+                Command(f, 0, "\"value\":1", Fixture.Ip); Command(f, 1, "\"value\":0", Fixture.Ip); Command(f, 2, GoveeLan.DisablePacket, Fixture.Ip);
                 f.Clear(); f.Lan.Wake(f.Token, Allowed); WakePair(f, Fixture.Ip);
             }
         }

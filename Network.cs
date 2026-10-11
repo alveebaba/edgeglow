@@ -369,26 +369,24 @@ namespace EdgeGlow
                             throw new InvalidOperationException("No matching automatic standby is pending.");
                     }
                 }
-                SendControlLocked(RazerJson(EnablePacket), expected,
-                    delegate { return AuthorizeStandby(expected, version, intent, authorize); }, false,
-                    delegate { RequireStandbyIntent(expected.Id, version, intent); RestoreStandbyBaseline(expected.Snapshot, intent); });
+                // Power first, then assert stream mode. Firmware settling and
+                // UDP loss remain unconfirmed; the engine schedules at most three
+                // wake-only pairs on usable images, never periodic healthy resets.
                 SendControlLocked("{\"msg\":{\"cmd\":\"turn\",\"data\":{\"value\":1}}}", expected,
                     delegate { return AuthorizeStandby(expected, version, intent, authorize); }, false, delegate
                     {
                         RequireStandbyIntent(expected.Id, version, intent);
                         SessionState session = RestoreStandbyBaseline(expected.Snapshot, intent);
-                        // The explicit monitor-follow wake is authorized by our
-                        // own off attempt, including an originally unknown state.
-                        // Normal cleanup still obeys the unchanged original state.
+                        // Only our own off attempt grants this temporary authority.
+                        // Ordinary Enable and final original-state cleanup are unchanged.
                         if (session.OriginalPower == false) session.ChangedPower = intent.ChangedPower = true;
                         session.PowerCommandStatusUtc = intent.PowerCommandStatusUtc = expected.Snapshot.LastStatusUtc;
                     });
-                lock (standbyGate)
-                {
-                    StandbyState current;
-                    if (version == standbyVersion && standby.TryGetValue(expected.Id, out current) && Object.ReferenceEquals(current, intent))
-                        standby.Remove(expected.Id);
-                }
+                SendControlLocked(RazerJson(EnablePacket), expected,
+                    delegate { return AuthorizeStandby(expected, version, intent, authorize); }, false,
+                    delegate { RequireStandbyIntent(expected.Id, version, intent); });
+                // Local success does not consume the off receipt. The engine
+                // revokes it on episode end or cancellation via CancelStandby.
             }
         }
 

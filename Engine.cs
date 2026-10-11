@@ -30,6 +30,11 @@ namespace EdgeGlow
         public string[] OutputDiagnosticEvents = new string[0];
         public int DisplayPowerState = -1, StandbyAttempts;
         public bool AutomaticStandby;
+        public int WakeRecoveryAttempts, ReleaseObligationCount, RequestedReleaseCount;
+        public string WakeRecoveryPhase = "none";
+        // Raw, dated device observation; power-on is not a streaming acknowledgement.
+        public bool? DevicePowerOn;
+        public DateTime DeviceStatusUtc;
         public string StandbyReason = "";
     }
 
@@ -158,23 +163,38 @@ namespace EdgeGlow
             double alpha = smoothingMs <= 0 ? 1 : 1 - Math.Exp(-dt / (smoothingMs / 1000.0));
             Color[] result = new Color[target.Length];
             for (int i = 0; i < target.Length; i++) {
-                int[] desired = new int[] { target[i].R, target[i].G, target[i].B };
-                int[] output = new int[3];
-                for (int c = 0; c < 3; c++) {
-                    int index = 3 * i + c;
-                    double value = initialize ? desired[c] : channels[index] + (desired[c] - channels[index]) * alpha;
-                    if (Math.Abs(desired[c] - value) < .01) value = desired[c];
-                    channels[index] = value;
-                    output[c] = Math.Max(0, Math.Min(255, (int)Math.Round(value)));
-                }
-                result[i] = Color.FromArgb(output[0], output[1], output[2]);
+                result[i] = Color.FromArgb(
+                    UpdateChannel(3 * i, target[i].R, initialize, alpha),
+                    UpdateChannel(3 * i + 1, target[i].G, initialize, alpha),
+                    UpdateChannel(3 * i + 2, target[i].B, initialize, alpha));
             }
             return result;
+        }
+        private int UpdateChannel(int index, int desired, bool initialize, double alpha)
+        {
+            double value = initialize ? desired : channels[index] + (desired - channels[index]) * alpha;
+            if (Math.Abs(desired - value) < .01) value = desired;
+            channels[index] = value;
+            return Math.Max(0, Math.Min(255, (int)Math.Round(value)));
         }
     }
 
     public sealed class GlowEngine : IDisposable
     {
+        // One finite episode on the existing worker, not a timer or watchdog.
+        // A closed record prevents generic off recovery from extending its budget.
+        private sealed class WakeEpisode
+        {
+            public string Identity, Phase = "replaying";
+            public long ControlVersion;
+            public int Attempts;
+            public double NextAttempt, Deadline;
+            public DateTime LastAttemptStatusUtc;
+            public bool Closed;
+        }
+        private WakeEpisode wakeRecovery;
+        public const int MaximumWakeAttempts = 3;
+        public const double WakeRetrySeconds = 1, WakeWindowSeconds = 6;
         private sealed class ReleaseObligation
         {
             public EndpointToken Endpoint;
@@ -194,8 +214,9 @@ namespace EdgeGlow
         private int displayPowerState = -1, topologyChanged, standbyAttempts;
         private double captureUnavailableSince = -1, nextStandbyAttempt;
         private string standbyIdentity = "", standbyReason = "";
-        private bool standbyWakeAttempted;
-        private volatile bool standbyFreshImage;
+        // Survives cancellation of a wake episode: an intervening Off/On
+        // must not make its old cached image eligible for ordinary activation.
+        private volatile bool wakeFreshImageRequired;
         private readonly List<ReleaseObligation> obligations = new List<ReleaseObligation>();
         private readonly ColorSmoother smoother = new ColorSmoother();
         private ActiveAreaDetector detector = new ActiveAreaDetector();
@@ -338,7 +359,7 @@ namespace EdgeGlow
             lock (controlGate) {
                 if (sessionLocked == locked && suspended == sleep) return;
                 sessionLocked = locked; suspended = sleep; controlVersion++;
-                if (locked || sleep) { standbyFreshImage = false; CancelTestLocked(); }
+                if (locked || sleep) { wakeFreshImageRequired = true; CancelTestLocked(); }
                 else resumeVersion++;
             }
         }
@@ -352,7 +373,7 @@ namespace EdgeGlow
                 QueueSystemEventLocked("Windows display power state: " + (value == 0 ? "Off" : value == 1 ? "On" : "Dimmed") + " (" + value + ")");
                 if (wasOff == displayOff) return;
                 controlVersion++;
-                if (displayOff) { standbyFreshImage = false; CancelTestLocked(); }
+                if (displayOff) { wakeFreshImageRequired = true; CancelTestLocked(); }
                 else resumeVersion++;
             }
         }
@@ -381,11 +402,41 @@ namespace EdgeGlow
                 return true;
             }
         }
+        private void ClearAutomaticStandbyState()
+        {
+            automaticStandby = false; noPictureStandby = false; standbyIdentity = ""; standbyReason = "";
+            standbyAttempts = 0; captureUnavailableSince = -1;
+        }
+        private void CancelWakeRecovery(string reason)
+        {
+            if (wakeRecovery == null) return;
+            DiagnosticLog("Wake episode canceled: " + reason + "; attempts=" + wakeRecovery.Attempts);
+            wakeRecovery = null;
+            if (standbyTransport != null) standbyTransport.CancelStandby();
+        }
+        private void CloseWakeRecovery(WakeEpisode episode, string reason)
+        {
+            if (!Object.ReferenceEquals(wakeRecovery, episode) || episode.Closed) return;
+            episode.Closed = true; episode.Phase = reason;
+            standbyTransport.CancelStandby();
+            DiagnosticLog("Wake episode closed: " + reason + "; attempts=" + episode.Attempts + "; visible output unconfirmed.");
+        }
         private void CancelAutomaticStandby()
         {
-            if (standbyTransport != null) standbyTransport.CancelStandby();
-            automaticStandby = false; noPictureStandby = false; standbyIdentity = ""; standbyReason = "";
-            standbyAttempts = 0; standbyWakeAttempted = false; standbyFreshImage = false; captureUnavailableSince = -1;
+            if (wakeRecovery != null) CancelWakeRecovery("standby ownership revoked");
+            else if (standbyTransport != null) standbyTransport.CancelStandby();
+            ClearAutomaticStandbyState();
+        }
+        private void MaintainWakeRecovery(double now, long version, bool blocked)
+        {
+            WakeEpisode episode = wakeRecovery;
+            if (episode == null) return;
+            if (blocked || version != episode.ControlVersion || !IsSelectedIdentity(episode.Identity)) {
+                CancelWakeRecovery("control, selected identity or blocker changed");
+                return;
+            }
+            // Runs before reply/capture early returns: neither can extend the window.
+            if (!episode.Closed && now >= episode.Deadline) CloseWakeRecovery(episode, "deadline elapsed");
         }
         private bool ServiceAutomaticStandby(EndpointToken endpoint, bool reachable, double now, long version, string reason)
         {
@@ -401,11 +452,9 @@ namespace EdgeGlow
                 // cancellation may replace the captured authorization version.
                 if (testZone >= 0) { CancelTestLocked(); version = controlVersion; }
                 testClearPending = false;
-                // A renewed block after a partial wake needs a new off budget.
-                // Overlapping blockers with no wake attempt remain quiet.
-                if (entering || standbyWakeAttempted) {
-                    standbyAttempts = 0; nextStandbyAttempt = now; standbyWakeAttempted = false;
-                }
+                // Wake has its own state. Every renewed block enters standby
+                // anew; overlapping blockers without a wake remain quiet.
+                if (entering) { standbyAttempts = 0; nextStandbyAttempt = now; }
             }
             if (entering) {
                 DiagnosticLog("Automatic standby requested: " + reason);
@@ -413,7 +462,7 @@ namespace EdgeGlow
                 activationAttempts = 0; nextActivation = now;
             }
             standbyReason = reason;
-            standbyFreshImage = false;
+            wakeFreshImageRequired = true;
             if (reachable && String.Equals(standbyIdentity, endpoint.Id, StringComparison.OrdinalIgnoreCase) &&
                 standbyAttempts < 3 && now >= nextStandbyAttempt) {
                 standbyAttempts++; nextStandbyAttempt = now + 1;
@@ -467,7 +516,7 @@ namespace EdgeGlow
         private void ResetPixels()
         {
             desired = null; sampledSettings = null; smoother.Reset();
-            standbyFreshImage = false;
+            if (automaticStandby || wakeRecovery != null) wakeFreshImageRequired = true;
             detector.ClearPendingEvidence();
             if (capture != null) { capture.Dispose(); capture = null; }
         }
@@ -512,6 +561,13 @@ namespace EdgeGlow
             processedPowerStatus = target.LastStatusUtc;
             if (target.PowerOn == true) {
                 offEpisode = false; offRecoveryAttempts = 0;
+                // Retire only a CLOSED budget on a newer fresh on observation.
+                // This restores ordinary later off/reconnect policy; it is not
+                // evidence that any wake stream-enable reached the device.
+                if (wakeRecovery != null && wakeRecovery.Closed && target.LastStatusUtc > wakeRecovery.LastAttemptStatusUtc) {
+                    DiagnosticLog("Closed wake budget retired after newer power-on status; streaming remains unconfirmed.");
+                    wakeRecovery = null;
+                }
             } else {
                 powerOffReports++; lastPowerOffReportUtc = target.LastStatusUtc;
                 if (!offEpisode) {
@@ -526,36 +582,86 @@ namespace EdgeGlow
         }
         private string ActivationWaitDetail
         {
-            get { return offEpisode && hasActivated && offRecoveryAttempts >= 3 ?
+            get { return wakeRecovery != null ?
+                (wakeRecovery.Closed ? "Wake retry budget ended; visible output is unconfirmed. Pause and resume to retry." :
+                 "Bounded wake reacquisition pending; local sends do not confirm lighting.") :
+                offEpisode && hasActivated && offRecoveryAttempts >= 3 ?
                 "The strip still reports off. Recovery limit reached; pause and resume to retry." :
                 "Activation retry pending; pause and resume to retry after three failures. " + networkError; }
         }
-        private bool Activate(EndpointToken endpoint, double now, long version, bool testing)
+        private bool CurrentSession(EndpointToken endpoint)
         {
-            now = services.MonotonicSeconds();
-            string key = Key(endpoint);
-            bool waking = automaticStandby && String.Equals(standbyIdentity, endpoint.Id, StringComparison.OrdinalIgnoreCase) &&
-                standbyTransport.HasStandby(endpoint.Id);
-            if (automaticStandby && !waking) CancelAutomaticStandby();
-            if (sessionActive && sessionKey == key && sessionEndpoint.Generation == endpoint.Generation) return true;
-            bool offRecovery = offEpisode && hasActivated;
-            if (now < nextActivation || activationAttempts >= 3 || (offRecovery && offRecoveryAttempts >= 3)) return false;
-            activationAttempts++; nextActivation = now + 1;
-            if (offRecovery) offRecoveryAttempts++;
-            activationAttemptsTotal++; lastActivationAttemptUtc = services.UtcNow();
-            lastActivationReason = waking ? "screen available after automatic standby" : testing ? "zone identification" : offRecovery ? "fresh device-off status" : datagrams == 0 ? "first usable image" : "resume or endpoint/reply/transport recovery";
-            DiagnosticLog("Lighting stream activation attempt: " + lastActivationReason + ", endpoint " + key + ", transport generation " + endpoint.Generation);
-            if (waking) {
-                standbyWakeAttempted = true;
-                standbyTransport.Wake(endpoint, delegate { return Authorize(version, testing, endpoint, true); });
-            }
-            else lan.Enable(endpoint, delegate { return Authorize(version, testing, endpoint, true); });
-            if (waking) CancelAutomaticStandby();
-            sessionActive = true; sessionKey = key; sessionEndpoint = endpoint; sessionGeneration++;
+            return sessionActive && sessionEndpoint != null && sessionKey == Key(endpoint) &&
+                sessionEndpoint.Generation == endpoint.Generation;
+        }
+        private void RecordActivationAttempt(EndpointToken endpoint, string reason)
+        {
+            activationAttemptsTotal++; lastActivationAttemptUtc = services.UtcNow(); lastActivationReason = reason;
+            DiagnosticLog("Lighting stream activation attempt: " + reason + ", endpoint " + Key(endpoint) + ", transport generation " + endpoint.Generation);
+        }
+        private void ActivationLocallySent(EndpointToken endpoint)
+        {
+            sessionActive = true; sessionKey = Key(endpoint); sessionEndpoint = endpoint; sessionGeneration++;
             hasActivated = true; lastActivationStatus = endpoint.Snapshot.LastStatusUtc;
             lastActivationSucceededUtc = services.UtcNow(); maximumColorSendGapSeconds = 0; maximumColorSendGapUtc = DateTime.MinValue; maximumColorSendGapWasTest = false; lastColorSendGapSeconds = 0;
             DiagnosticLog("Lighting stream activation locally sent; delivery unconfirmed: session " + sessionGeneration + ", reason " + lastActivationReason);
             previous = null; previousWasTest = false; sentAt = -1000;
+        }
+        private bool AuthorizeWake(WakeEpisode episode, EndpointToken endpoint)
+        {
+            // Transport also validates its immutable endpoint/receiver generation,
+            // subnet, identity conflicts and intent version at EVERY datagram.
+            return Object.ReferenceEquals(wakeRecovery, episode) && !episode.Closed && !wakeFreshImageRequired &&
+                services.MonotonicSeconds() < episode.Deadline &&
+                String.Equals(episode.Identity, endpoint.Id, StringComparison.OrdinalIgnoreCase) &&
+                Authorize(episode.ControlVersion, false, endpoint, true);
+        }
+        private bool ActivateWake(EndpointToken endpoint, double now)
+        {
+            WakeEpisode episode = wakeRecovery;
+            if (!episode.Closed && !standbyTransport.HasStandby(episode.Identity))
+                CloseWakeRecovery(episode, "wake authority unavailable");
+            if (!episode.Closed && now >= episode.Deadline) CloseWakeRecovery(episode, "deadline elapsed");
+            if (episode.Closed || now < episode.NextAttempt) return CurrentSession(endpoint);
+            episode.Attempts++; episode.NextAttempt = now + WakeRetrySeconds;
+            episode.LastAttemptStatusUtc = endpoint.Snapshot.LastStatusUtc;
+            RecordActivationAttempt(endpoint, "bounded automatic wake " + episode.Attempts + "/" + MaximumWakeAttempts);
+            try {
+                standbyTransport.Wake(endpoint, delegate { return AuthorizeWake(episode, endpoint); });
+                ActivationLocallySent(endpoint);
+            }
+            finally {
+                // Exceptions and silent local-success drops consume the same
+                // finite budget. Reply changes never reset it while it is open.
+                if (episode.Attempts >= MaximumWakeAttempts) CloseWakeRecovery(episode, "attempt budget ended");
+                else if (services.MonotonicSeconds() >= episode.Deadline) CloseWakeRecovery(episode, "deadline elapsed");
+            }
+            return CurrentSession(endpoint);
+        }
+        private bool Activate(EndpointToken endpoint, double now, long version, bool testing)
+        {
+            now = services.MonotonicSeconds();
+            bool waking = automaticStandby && String.Equals(standbyIdentity, endpoint.Id, StringComparison.OrdinalIgnoreCase) &&
+                standbyTransport.HasStandby(endpoint.Id);
+            if (waking) {
+                // Called only after the fresh-after-standby image gate. Transfer
+                // our off authority, rather than leaving AutomaticStandby true
+                // (which would issue another off during a short capture miss).
+                wakeRecovery = new WakeEpisode { Identity = endpoint.Id, ControlVersion = version,
+                    NextAttempt = now, Deadline = now + WakeWindowSeconds };
+                ClearAutomaticStandbyState();
+            }
+            else if (automaticStandby) CancelAutomaticStandby();
+            if (wakeRecovery != null) return ActivateWake(endpoint, now);
+            if (CurrentSession(endpoint)) return true;
+            bool offRecovery = offEpisode && hasActivated;
+            if (now < nextActivation || activationAttempts >= 3 || (offRecovery && offRecoveryAttempts >= 3)) return false;
+            activationAttempts++; nextActivation = now + 1;
+            if (offRecovery) offRecoveryAttempts++;
+            RecordActivationAttempt(endpoint, testing ? "zone identification" : offRecovery ? "fresh device-off status" :
+                datagrams == 0 ? "first usable image" : "resume or endpoint/reply/transport recovery");
+            lan.Enable(endpoint, delegate { return Authorize(version, testing, endpoint, true); });
+            ActivationLocallySent(endpoint);
             activationAttempts = 0; // Local success does not reset the unresolved off-episode budget.
             return true;
         }
@@ -636,6 +742,8 @@ namespace EdgeGlow
         private void Publish(string message, string detail, string policy, DeviceInfo target, Color[] colors, bool sending, Stopwatch work)
         {
             double now = services.MonotonicSeconds();
+            int requestedReleases = 0;
+            foreach (ReleaseObligation item in obligations) if (item.Requested) requestedReleases++;
             state = new EngineState {
                 Message = message, Detail = detail ?? "", OutputPolicy = policy, Sending = sending,
                 ReleasePending = obligations.Count != 0, Colors = colors == null ? new Color[settings.ZoneCount] : (Color[])colors.Clone(),
@@ -648,7 +756,11 @@ namespace EdgeGlow
                 LastColorSendUtc = lastColorSendUtc, LastNearBlackSendUtc = lastNearBlackSendUtc, LastAllBlackSendUtc = lastAllBlackSendUtc, MaximumColorSendGapUtc = maximumColorSendGapUtc, MaximumColorSendGapWasTest = maximumColorSendGapWasTest, LastColorSendGapSeconds = lastColorSendGapSeconds, MaximumColorSendGapSeconds = maximumColorSendGapSeconds,
                 ActivationAttemptsTotal = activationAttemptsTotal, LastActivationAttemptUtc = lastActivationAttemptUtc, LastActivationSucceededUtc = lastActivationSucceededUtc, LastActivationReason = lastActivationReason,
                 PowerOffReports = powerOffReports, LastPowerOffReportUtc = lastPowerOffReportUtc, OutputDiagnosticEvents = outputDiagnosticEvents.ToArray(),
-                DisplayPowerState = displayPowerState, AutomaticStandby = automaticStandby, StandbyReason = standbyReason, StandbyAttempts = standbyAttempts
+                DisplayPowerState = displayPowerState, AutomaticStandby = automaticStandby, StandbyReason = standbyReason, StandbyAttempts = standbyAttempts,
+                WakeRecoveryAttempts = wakeRecovery == null ? 0 : wakeRecovery.Attempts,
+                WakeRecoveryPhase = wakeRecovery == null ? "none" : wakeRecovery.Phase,
+                DevicePowerOn = target == null ? null : target.PowerOn, DeviceStatusUtc = target == null ? DateTime.MinValue : target.LastStatusUtc,
+                ReleaseObligationCount = obligations.Count, RequestedReleaseCount = requestedReleases
             };
         }
         public void Step()
@@ -705,6 +817,10 @@ namespace EdgeGlow
                     }
                     bool recoveredTransport = reachable && (!previouslyReachable || transportGeneration != endpoint.Generation);
                     if (recoveredTransport) {
+                        // A genuinely recovered connection after a CLOSED episode
+                        // may use normal activation again, without wake power authority.
+                        // An OPEN episode keeps its original count and deadline.
+                        if (wakeRecovery != null && wakeRecovery.Closed) CancelWakeRecovery("connection recovered after closed episode");
                         sessionActive = false; activationAttempts = 0; nextActivation = now;
                         transportGeneration = endpoint.Generation;
                         if (automaticStandby) { standbyAttempts = 0; nextStandbyAttempt = now; }
@@ -728,6 +844,7 @@ namespace EdgeGlow
                     if (sessionActive && sessionEndpoint != null && !IsSelectedIdentity(sessionEndpoint.Id)) RequestRelease();
                     bool automaticBlock = displayOff || selectedDisplayMissing || sessionLocked || suspended;
                     bool manualPause = (paused && !testing && !(automaticBlock && previousWasTest && !automaticStandby)) || competitor;
+                    MaintainWakeRecovery(services.MonotonicSeconds(), version, manualPause || automaticBlock || testing);
                     if (manualPause) CancelAutomaticStandby();
                     if (automaticBlock && !manualPause) {
                         string reason = suspended ? "Windows sleeping" : sessionLocked ? "Windows locked" : displayOff ? "Windows display off" : "selected display unavailable";
@@ -810,15 +927,15 @@ namespace EdgeGlow
                     if (metadata != null && metadata.ProtectedContentMasked) protectedResults++;
                     bool fresh = metadata == null ? capture.HasNewFrame : metadata.HasFreshDesktopFrame;
                     captureUnavailableSince = -1;
-                    if (automaticStandby && fresh) {
+                    if ((automaticStandby || wakeFreshImageRequired) && fresh) {
                         lock (controlGate) {
                             if (version != controlVersion || displayOff || selectedDisplayMissing || sessionLocked || suspended)
                                 throw new OperationCanceledException();
-                            standbyFreshImage = true;
+                            wakeFreshImageRequired = false;
                         }
                     }
-                    if (automaticStandby && !standbyFreshImage) {
-                        Publish("Screen standby: waiting for a current frame", "The screen must provide a fresh image before lighting resumes.", "automatic standby; waiting for fresh image", target, null, false, work);
+                    if (wakeFreshImageRequired) {
+                        Publish("Waiting for a current screen frame", "The screen must provide a fresh image before lighting resumes.", "waiting for fresh image after screen transition", target, null, false, work);
                         return;
                     }
                     noPictureStandby = false;

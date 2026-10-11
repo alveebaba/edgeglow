@@ -7,6 +7,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-failure-recovery
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-lifecycle-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-public-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-standby-tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-wake-recovery-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-regression-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-combined-tests.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-phase-e-control-tests.ps1
@@ -21,6 +22,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-vivid-color-test
 The public runner covers fresh public defaults, paused first launch, first-device identity selection, reply timing and output diagnostics. The other runners exercise real engine/filter/detector integration, combined transport boundaries, receiver retirement, release retries and ten/eighteen-zone mapping. They use generated capture, injected time and fake/in-memory transports; these suites do not capture the real desktop or control a strip. Settings fixtures are isolated. Raw evidence is written under review-output or temporary test directories, excluded from Git.
 
 The standby runner exercises notification parsing and callback lifetime, automatic off/wake transitions, fresh-image recovery, still pictures, missing captures, manual pause, overlapping blockers, bounded retries, transport identity checks and retained power baselines. Registration, capture and network boundaries are injected; it does not turn off a real monitor or send to a strip.
+
+The wake-recovery runner compiles a selected test entrypoint using the real managed engine and transport with generated images and in-memory sockets. Its 34 cases cover silent command loss, bounded attempts and deadlines, cached-image recovery, renewed blockers, cancellation and endpoint authority. Delivery and firmware behavior are models, not measurements of H6609 hardware. A new output directory retains source hashes, compiler arguments/output, executable hash, test output and traces; `-OutputDirectory` can select a short path if Windows path limits affect evidence writing. It never runs the ordinary application entrypoint.
 
 The lifecycle runner injects worker/cleanup failures and checks queued/bounded power diagnostics and expected-exit policy. Recovery tests cover bounded direct relaunch, deliberate exit suppression and paused recovery. These do not establish long-duration stability or recovery from a force kill or uncatchable native crash.
 

@@ -14,7 +14,11 @@ namespace EdgeGlow
         public static int Main(string[] args)
         {
             Run("Disabled vivid preference preserves pre-feature output and overloads", DisabledCompatibility);
-            Run("Red mixed with white or pale pixels lowers secondary components", RedMixtures);
+            Run("Broad colored areas mixed with pale pixels deepen across all hues", ColorMixtures);
+            Run("Small colored patches retain mostly neutral area output", MinorityNeutralCoverage);
+            Run("Small saturated patches do not replace the main colored area", MinorityHueCoverage);
+            Run("Vivid extraction treats permuted RGB hues equally", HuePermutationSymmetry);
+            Run("Vivid extraction and output gamma remain independently selectable", VividGammaIndependence);
             Run("Vivid preference cannot raise the existing encoded output peak", PeakBound);
             Run("Uniform white gray pastels and colors retain their output", UniformContent);
             Run("Grayscale mixtures remain grayscale and retain their level", GrayscaleContent);
@@ -111,20 +115,24 @@ namespace EdgeGlow
             Check(baselineBytes.Count == 28224, "disabled baseline comparison count changed");
             Check(digest == "00c57408627272bf79bcaee6eee47cf0d64c73411ce9ea651719c31b8ab71e54", "disabled preference changed pre-feature encoded output");
         }
-        private static void RedMixtures()
+        private static void ColorMixtures()
         {
-            Color red = Color.FromArgb(200, 10, 0);
-            foreach (Color pale in new Color[] { Color.FromArgb(200, 200, 200), Color.FromArgb(200, 130, 130) })
+            foreach (int[] order in HuePermutations)
+            foreach (Color paleBase in new Color[] { Color.FromArgb(200, 200, 200), Color.FromArgb(200, 130, 130) })
             foreach (int zones in new int[] { 10, 18 })
             foreach (bool ignoreDark in new bool[] { false, true })
             foreach (double saturation in new double[] { 1, 1.4 }) {
-                CaptureFrame mixture = Mixed(red, pale);
+                Color colored = PermuteColor(Color.FromArgb(200, 10, 0), order), pale = PermuteColor(paleBase, order);
+                CaptureFrame mixture = Mixed(colored, pale);
                 Color[] normal = Sample(mixture, zones, ignoreDark, .8, saturation, 1, false);
                 Color[] favored = Sample(mixture, zones, ignoreDark, .8, saturation, 1, true);
-                for (int i = 0; i < zones; i++) {
-                    Check(favored[i].G < normal[i].G && favored[i].B < normal[i].B, "red/white or red/pale averaging retained diluted secondary components");
-                    Check(favored[i].R > favored[i].G && favored[i].R > favored[i].B, "red mixture lost dominant red");
-                    Check(Peak(favored[i]) <= Peak(normal[i]), "red preference amplified the encoded output peak");
+                int dominant = Array.IndexOf(order, 0);
+                for (int zone = 0; zone < zones; zone++) {
+                    foreach (int channel in new int[] { 0, 1, 2 }) if (channel != dominant) {
+                        Check(ChannelAt(favored[zone], channel) < ChannelAt(normal[zone], channel), "broad color/pale mixture did not deepen its secondary components");
+                        Check(ChannelAt(favored[zone], dominant) > ChannelAt(favored[zone], channel), "broad mixture lost its averaged dominant color");
+                    }
+                    Check(Peak(favored[zone]) <= Peak(normal[zone]), "broad color mixture amplified the output peak");
                 }
             }
         }
@@ -193,16 +201,16 @@ namespace EdgeGlow
         private static void ConcurrentProfiles()
         {
             CaptureFrame frame = Pattern(1);
-            Color[][] references = new Color[8][];
-            for (int i = 0; i < 8; i++) references[i] = Sample(frame, i < 4 ? 10 : 18, (i & 2) != 0, .8, 1.4, (i & 1) != 0 ? 1.6 : 1, (i & 1) != 0);
+            Color[][] references = new Color[16][];
+            for (int i = 0; i < 16; i++) references[i] = Sample(frame, i < 8 ? 10 : 18, (i & 4) != 0, .8, 1.4, (i & 2) != 0 ? 1.6 : 1, (i & 1) != 0);
             System.Threading.Thread[] workers = new System.Threading.Thread[6]; Exception failure = null;
             for (int worker = 0; worker < workers.Length; worker++) {
                 int index = worker;
                 workers[worker] = new System.Threading.Thread(delegate() {
                     try {
                         for (int iteration = 0; iteration < 100; iteration++) {
-                            int i = (index + iteration * 3) % 8;
-                            EqualColors(Sample(frame, i < 4 ? 10 : 18, (i & 2) != 0, .8, 1.4, (i & 1) != 0 ? 1.6 : 1, (i & 1) != 0), references[i], "concurrent vivid/gamma profile");
+                            int i = (index + iteration * 3) % 16;
+                            EqualColors(Sample(frame, i < 8 ? 10 : 18, (i & 4) != 0, .8, 1.4, (i & 2) != 0 ? 1.6 : 1, (i & 1) != 0), references[i], "concurrent vivid/gamma profile");
                         }
                     } catch (Exception ex) { System.Threading.Interlocked.CompareExchange(ref failure, ex, null); }
                 });
@@ -263,6 +271,144 @@ namespace EdgeGlow
             }
             Check(vividWitnesses > 0 && orderingWitnesses > 0, "engine cases do not distinguish vivid selection or smoothing order");
         }
+private static CaptureFrame FractionMixture(Color majority, Color minority, int percent)
+{
+    // Each top/bottom sector contains whole 100-column periods in both layouts:
+    // 10 zones -> 300 columns; 18 zones -> 200 columns. Fractions are exact.
+    const int width = 1200, height = 60;
+    byte[] pixels = new byte[width * height * 4];
+    for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+        Color color = x % 100 < percent ? minority : majority;
+        int index = (y * width + x) * 4;
+        pixels[index] = color.B; pixels[index + 1] = color.G;
+        pixels[index + 2] = color.R; pixels[index + 3] = 255;
+    }
+    return new CaptureFrame(width, height, pixels);
+}
+
+private static void MinorityNeutralCoverage()
+{
+    Color[] hues = { Color.FromArgb(200, 0, 0), Color.FromArgb(0, 200, 0),
+        Color.FromArgb(0, 0, 200), Color.FromArgb(200, 200, 0),
+        Color.FromArgb(0, 200, 200), Color.FromArgb(200, 0, 200) };
+    foreach (int neutral in new int[] { 200, 255 })
+    foreach (Color hue in hues)
+    foreach (int percent in new int[] { 1, 2, 5 })
+    foreach (int zones in new int[] { 10, 18 })
+    foreach (bool ignoreDark in new bool[] { false, true }) {
+        CaptureFrame frame = FractionMixture(Color.FromArgb(neutral, neutral, neutral), hue, percent);
+        Color[] normal = Sample(frame, zones, ignoreDark, 1, 1, 1, false);
+        Color[] vivid = Sample(frame, zones, ignoreDark, 1, 1, 1, true);
+        for (int zone = 0; zone < (zones == 18 ? 6 : 4); zone++) {
+            Check(Peak(vivid[zone]) <= Peak(normal[zone]), "minority patch raised area light level");
+            // A 5% colored patch must leave >=90% neutral secondary-channel
+            // content. Tighter bounds cover 1% and 2%; allow one byte rounding.
+            double floor = Peak(vivid[zone]) * (1 - 2 * percent / 100.0) - 1;
+            if (hue.R == 0) Check(vivid[zone].R >= floor, "minority patch replaced mostly neutral red channel");
+            if (hue.G == 0) Check(vivid[zone].G >= floor, "minority patch replaced mostly neutral green channel");
+            if (hue.B == 0) Check(vivid[zone].B >= floor, "minority patch replaced mostly neutral blue channel");
+        }
+    }
+}
+
+private static readonly int[][] HuePermutations = {
+    new int[] { 0, 1, 2 }, new int[] { 0, 2, 1 }, new int[] { 1, 0, 2 },
+    new int[] { 1, 2, 0 }, new int[] { 2, 0, 1 }, new int[] { 2, 1, 0 } };
+
+private static Color PermuteColor(Color color, int[] order)
+{
+    int[] channels = { color.R, color.G, color.B };
+    return Color.FromArgb(channels[order[0]], channels[order[1]], channels[order[2]]);
+}
+
+private static int ChannelAt(Color color, int channel)
+{ return channel == 0 ? color.R : channel == 1 ? color.G : color.B; }
+
+private static void MinorityHueCoverage()
+{
+    // Mostly moderately pale, muted or very pale blue plus saturated red.
+    // Permutations cover every primary orientation. Cases three and four
+    // also distinguish hue-preserving extraction from a mere 2x weight cap.
+    Color[] majorities = { Color.FromArgb(100, 140, 200), Color.FromArgb(160, 180, 200),
+        Color.FromArgb(160, 180, 200), Color.FromArgb(230, 230, 255) };
+    Color[] minorities = { Color.FromArgb(200, 0, 0), Color.FromArgb(200, 0, 0),
+        Color.FromArgb(200, 0, 0), Color.FromArgb(255, 0, 0) };
+    int[] fractions = { 10, 5, 10, 5 };
+    for (int test = 0; test < majorities.Length; test++)
+    foreach (int[] order in HuePermutations)
+    foreach (int zones in new int[] { 10, 18 })
+    foreach (bool ignoreDark in new bool[] { false, true }) {
+        Color majority = PermuteColor(majorities[test], order);
+        Color minority = PermuteColor(minorities[test], order);
+        CaptureFrame frame = FractionMixture(majority, minority, fractions[test]);
+        Color[] normal = Sample(frame, zones, ignoreDark, 1, 1, 1, false);
+        Color[] vivid = Sample(frame, zones, ignoreDark, 1, 1, 1, true);
+        int dominant = Array.IndexOf(order, 2);
+        for (int zone = 0; zone < (zones == 18 ? 6 : 4); zone++) {
+            for (int channel = 0; channel < 3; channel++) if (channel != dominant) {
+                Check(ChannelAt(normal[zone], dominant) > ChannelAt(normal[zone], channel), "fixture ordinary mean lacks majority hue");
+                Check(ChannelAt(vivid[zone], dominant) > ChannelAt(vivid[zone], channel), "saturated sliver replaced the majority hue");
+            }
+            for (int channel = 0; channel < 3; channel++)
+            for (int other = channel + 1; other < 3; other++) {
+                int normalDifference = ChannelAt(normal[zone], channel) - ChannelAt(normal[zone], other);
+                int vividDifference = ChannelAt(vivid[zone], channel) - ChannelAt(vivid[zone], other);
+                Check(normalDifference == 0 ? Math.Abs(vividDifference) <= 1 : normalDifference * vividDifference >= 0,
+                    "vivid adjustment reversed ordinary mean channel ordering");
+            }
+            Check(Peak(vivid[zone]) <= Peak(normal[zone]), "minority hue increased ordinary area light level");
+        }
+    }
+}
+
+private static CaptureFrame PermuteFrame(CaptureFrame source, int[] order)
+{
+    byte[] pixels = new byte[source.Bgra.Length];
+    for (int index = 0; index < pixels.Length; index += 4) {
+        Color color = PermuteColor(Color.FromArgb(source.Bgra[index + 2], source.Bgra[index + 1], source.Bgra[index]), order);
+        pixels[index] = color.B; pixels[index + 1] = color.G;
+        pixels[index + 2] = color.R; pixels[index + 3] = source.Bgra[index + 3];
+    }
+    return new CaptureFrame(source.Width, source.Height, pixels);
+}
+
+private static void HuePermutationSymmetry()
+{
+    // Strength=1 isolates extraction. The existing strength adjustment uses
+    // unequal luma coefficients, so it is not permutation-symmetric at 1.4.
+    foreach (CaptureFrame frame in new CaptureFrame[] { Pattern(1),
+        FractionMixture(Color.FromArgb(200, 200, 200), Color.FromArgb(200, 0, 0), 5) })
+    foreach (int zones in new int[] { 10, 18 })
+    foreach (bool ignoreDark in new bool[] { false, true }) {
+        Color[] reference = Sample(frame, zones, ignoreDark, 1, 1, 1, true);
+        foreach (int[] order in HuePermutations) {
+            Color[] transformed = Sample(PermuteFrame(frame, order), zones, ignoreDark, 1, 1, 1, true);
+            for (int zone = 0; zone < zones; zone++) {
+                Color expected = PermuteColor(reference[zone], order);
+                Check(Math.Abs(transformed[zone].R - expected.R) <= 1 && Math.Abs(transformed[zone].G - expected.G) <= 1 &&
+                    Math.Abs(transformed[zone].B - expected.B) <= 1, "RGB permutation changed vivid extraction preference");
+            }
+        }
+    }
+}
+
+private static void VividGammaIndependence()
+{
+    foreach (CaptureFrame frame in new CaptureFrame[] { Pattern(1),
+        FractionMixture(Color.FromArgb(200, 200, 200), Color.FromArgb(200, 0, 0), 5) })
+    foreach (int zones in new int[] { 10, 18 })
+    foreach (bool ignoreDark in new bool[] { false, true })
+    foreach (bool favor in new bool[] { false, true }) {
+        Color[] extracted = Sample(frame, zones, ignoreDark, .8, 1.4, 1, favor);
+        foreach (double gamma in new double[] { 1, 1.6, 2.2 }) {
+            Color[] actual = Sample(frame, zones, ignoreDark, .8, 1.4, gamma, favor);
+            for (int zone = 0; zone < zones; zone++)
+                EqualColor(actual[zone], Gamma(extracted[zone], gamma), "independently selected vivid/gamma profile");
+        }
+    }
+}
+
+
         private static Color[] Corrected(Color[] source, double gamma)
         { Color[] result = new Color[source.Length]; for (int i = 0; i < result.Length; i++) result[i] = Gamma(source[i], gamma); return result; }
         private static Color[] Blend(Color[] from, Color[] to, double alpha)
